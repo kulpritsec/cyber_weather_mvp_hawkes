@@ -1,0 +1,9 @@
+fastapi==0.114.2
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+SQLAlchemy==2.0.35
+pandas==2.2.3
+numpy==1.26.4
+scipy==1.14.1
+python-dateutil==2.9.0.post0
+geojson==3.1.0
