@@ -8,6 +8,7 @@ import sys
 import time
 import subprocess
 import argparse
+import asyncio
 from pathlib import Path
 
 # Add the app directory to Python path
@@ -56,6 +57,21 @@ def fit_models(hours=24, min_events=50, bootstrap=True):
     fit_hawkes(hours=hours, min_events=min_events)
     print("✅ Hawkes models fitted")
 
+def ingest_threat_feeds():
+    """Ingest real-time threat intelligence feeds"""
+    print("🛡️ Ingesting threat intelligence feeds...")
+    try:
+        from app.services.threat_feeds import ingest_threat_feeds
+        count = asyncio.run(ingest_threat_feeds())
+        print(f"✅ Processed {count} threat indicators")
+        return count
+    except ImportError as e:
+        print(f"⚠️ Threat feeds disabled: {e}")
+        return 0
+    except Exception as e:
+        print(f"❌ Error ingesting threat feeds: {e}")
+        return 0
+
 def start_server(port=8000, reload=True):
     """Start the FastAPI server"""
     print(f"🚀 Starting FastAPI server on port {port}...")
@@ -82,6 +98,7 @@ def main():
     parser = argparse.ArgumentParser(description="Cyber Weather MVP Startup")
     parser.add_argument("--skip-data", action="store_true", help="Skip data generation")
     parser.add_argument("--skip-models", action="store_true", help="Skip model fitting")
+    parser.add_argument("--threat-feeds", action="store_true", help="Ingest real threat intelligence feeds")
     parser.add_argument("--hours", type=int, default=24, help="Hours of data to generate")
     parser.add_argument("--rate", type=int, default=1200, help="Events per hour")
     parser.add_argument("--min-events", type=int, default=50, help="Minimum events for model fitting")
@@ -105,6 +122,14 @@ def main():
         time.sleep(1)  # Brief pause for database commit
         
         # Step 3: Nowcast computation
+        build_nowcast()
+        time.sleep(1)
+    
+    # Step 3.5: Threat feeds ingestion (optional)
+    if args.threat_feeds:
+        ingest_threat_feeds()
+        time.sleep(1)
+        # Recompute nowcast with new threat data
         build_nowcast()
         time.sleep(1)
     

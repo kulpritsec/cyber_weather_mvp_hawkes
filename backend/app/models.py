@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Float, String, DateTime, Index, ForeignKey
+from sqlalchemy import Column, Integer, Float, String, DateTime, Index, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from .db import Base
 
@@ -10,8 +10,11 @@ class Event(Base):
     lon = Column(Float)
     vector = Column(String, index=True)
     count = Column(Integer, default=1)
+    source = Column(String, index=True, default="synthetic")  # Track data source
+    threat_metadata = Column(Text)  # JSON metadata for threat intelligence
 
 Index("ix_events_time_vector", Event.ts, Event.vector)
+Index("ix_events_source", Event.source)
 
 class GridCell(Base):
     __tablename__ = "grid_cells"
