@@ -20,17 +20,40 @@ def _expand_times(times: List[float], counts: List[int]) -> np.ndarray:
 
 def _nll(theta: np.ndarray, t: np.ndarray, T: float) -> float:
     log_mu, log_beta, gamma = theta
-    mu = math.exp(log_mu); beta = math.exp(log_beta); n_br = 1/(1+math.exp(-gamma)); alpha = n_br*beta
+    
+    # Add bounds to prevent overflow
+    log_mu = max(-10, min(10, log_mu))
+    log_beta = max(-10, min(10, log_beta))
+    gamma = max(-10, min(10, gamma))
+    
+    try:
+        mu = math.exp(log_mu)
+        beta = math.exp(log_beta)
+        n_br = 1/(1+math.exp(-gamma))
+        alpha = n_br*beta
+    except (OverflowError, ZeroDivisionError):
+        return float("inf")
+        
     if mu <= 0 or beta <= 0 or not (0.0 < n_br < 1.0): return float("inf")
     s = 0.0; log_sum = 0.0; last = t[0] if len(t)>0 else 0.0
     for ti in t:
-        decay = math.exp(-beta * (ti - last)) if ti >= last else 1.0
-        s = decay * (1.0 + s)
-        last = ti
-        lam = mu + alpha * s
-        if lam <= 0 or not math.isfinite(lam): return float("inf")
-        log_sum += math.log(lam)
-    integ = mu*T + (alpha/beta)*np.sum(1.0 - np.exp(-beta*(T - t)))
+        try:
+            decay = math.exp(-beta * (ti - last)) if ti >= last else 1.0
+            s = decay * (1.0 + s)
+            last = ti
+            lam = mu + alpha * s
+            if lam <= 0 or not math.isfinite(lam): return float("inf")
+            log_sum += math.log(lam)
+        except (OverflowError, ValueError):
+            return float("inf")
+    
+    try:
+        integ = mu*T + (alpha/beta)*np.sum(1.0 - np.exp(-beta*(T - t)))
+        if not math.isfinite(integ):
+            return float("inf")
+    except (OverflowError, ValueError):
+        return float("inf")
+        
     return -(log_sum - integ)
 
 def fit_hawkes_exponential(times: List[float], counts: List[int], T: float) -> HawkesParams:
@@ -39,11 +62,22 @@ def fit_hawkes_exponential(times: List[float], counts: List[int], T: float) -> H
         rate = len(t)/max(T,1e-6); return HawkesParams(mu=max(1e-4, rate*0.5), beta=1.0, n_br=0.2)
     t = np.sort(t); rate = len(t)/max(T,1e-6)
     theta0 = np.array([math.log(max(rate*0.5,1e-4)), math.log(1.0), math.log(0.3/0.7)])
-    res = minimize(lambda th: _nll(th, t, T), theta0, method="L-BFGS-B")
+    
+    # Add bounds to prevent parameter explosion
+    bounds = [(-8, 8), (-5, 5), (-5, 5)]  # bounds for [log_mu, log_beta, gamma]
+    
+    res = minimize(lambda th: _nll(th, t, T), theta0, method="L-BFGS-B", bounds=bounds)
     if not res.success:
         return HawkesParams(mu=max(rate*0.5,1e-4), beta=1.0, n_br=0.3)
+    
     log_mu, log_beta, gamma = res.x
-    mu = float(math.exp(log_mu)); beta = float(math.exp(log_beta)); n_br = float(1/(1+math.exp(-gamma)))
+    try:
+        mu = float(math.exp(log_mu))
+        beta = float(math.exp(log_beta))
+        n_br = float(1/(1+math.exp(-gamma)))
+    except (OverflowError, ValueError):
+        return HawkesParams(mu=max(rate*0.5,1e-4), beta=1.0, n_br=0.3)
+        
     n_br = min(0.95, max(1e-3, n_br)); beta = max(1e-3, beta); mu = max(1e-6, mu)
     return HawkesParams(mu=mu, beta=beta, n_br=n_br)
 

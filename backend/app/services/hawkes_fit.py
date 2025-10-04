@@ -25,7 +25,12 @@ def _event_series_for_cell(session: Session, cell: GridCell, vector: str, start,
                                     Event.lon >= cell.lon_min, Event.lon < cell.lon_max)                            .order_by(Event.ts.asc())
     times = []; counts = []
     for ev in q:
-        h = (ev.ts - start).total_seconds()/3600.0
+        # Handle timezone-naive timestamps from database
+        ev_ts = ev.ts
+        if ev_ts.tzinfo is None:
+            from datetime import timezone
+            ev_ts = ev_ts.replace(tzinfo=timezone.utc)
+        h = (ev_ts - start).total_seconds()/3600.0
         times.append(h); counts.append(int(max(1, ev.count)))
     T = (end - start).total_seconds()/3600.0
     return times, counts, T
