@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { MapContainer, TileLayer, Polygon, Polyline, Tooltip } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
-import { fetchCyberData } from '../lib/api'
+import { fetchCyberData, fetchContours } from '../lib/api'
 import { colorFor } from '../lib/colors'
-import { generateContours } from '../lib/contours'
 
 export default function MapView({ vector, mode, horizon, res }:{vector:string,mode:'nowcast'|'forecast'|'params',horizon:number,res:number}){
   const [geo,setGeo]=useState<any>(null); const [err,setErr]=useState<string|null>(null); const [loading,setLoading]=useState(false)
@@ -15,27 +14,23 @@ export default function MapView({ vector, mode, horizon, res }:{vector:string,mo
     fetchCyberData(mode, vector, horizon, res)
       .then(data => {
         setGeo(data)
-        // Generate contours for intensity data
-        if (mode !== 'params' && data.features) {
-          const gridPoints = data.features.map((f: any) => {
-            const bounds = f.geometry.coordinates[0]
-            const lats = bounds.map((p: number[]) => p[1])
-            const lons = bounds.map((p: number[]) => p[0])
-            return {
-              lat: (Math.min(...lats) + Math.max(...lats)) / 2,
-              lon: (Math.min(...lons) + Math.max(...lons)) / 2,
-              value: f.properties.pressure ?? f.properties.normalized ?? 0
-            }
-          })
-          const contourLines = generateContours(gridPoints)
-          setContours(contourLines)
-        } else {
-          setContours([])
-        }
       })
       .catch(e=>setErr(String(e)))
       .finally(()=>setLoading(false))
   },[vector,mode,horizon,res])
+
+  // Fetch contours when showContours is enabled
+  useEffect(() => {
+    if (showContours && mode !== 'params') {
+      fetchContours(vector, horizon, res, 5)
+        .then(contourData => {
+          setContours(contourData.features || [])
+        })
+        .catch(e => console.error('Failed to fetch contours:', e))
+    } else {
+      setContours([])
+    }
+  }, [showContours, vector, mode, horizon, res])
   
   return (<div className="map-container">
     <MapContainer center={[20,0]} zoom={2} scrollWheelZoom style={{height:'100%'}}>
@@ -75,22 +70,33 @@ export default function MapView({ vector, mode, horizon, res }:{vector:string,mo
         }
       })}
       
-      {/* Contour lines */}
-      {showContours && mode !== 'params' && contours.map((contour, i) => 
-        contour.coordinates.map((ring: any, j: number) => 
-          ring.map((polygon: any, k: number) => (
+      {/* Contour lines from backend */}
+      {showContours && mode !== 'params' && contours.map((contour, i) => {
+        if (contour.geometry.type === 'LineString') {
+          const positions = contour.geometry.coordinates.map(([lon, lat]: [number, number]) => [lat, lon])
+          const level = contour.properties.contour_level || 0
+          return (
             <Polyline
-              key={`contour-${i}-${j}-${k}`}
-              positions={polygon.map(([lon, lat]: [number, number]) => [lat, lon])}
+              key={`contour-${i}`}
+              positions={positions}
               pathOptions={{
-                color: `hsl(${240 - contour.level * 120}, 70%, 50%)`,
+                color: `hsl(${240 - (level * 120)}, 70%, 50%)`,
                 weight: 2,
                 opacity: 0.8
               }}
-            />
-          ))
-        )
-      )}
+            >
+              <Tooltip>
+                <div>
+                  <b>Contour Level:</b> {level.toFixed(3)}<br/>
+                  <b>Vector:</b> {contour.properties.vector}<br/>
+                  <b>Horizon:</b> +{contour.properties.horizon_h}h
+                </div>
+              </Tooltip>
+            </Polyline>
+          )
+        }
+        return null
+      })}
     </MapContainer>
     
     {/* Controls overlay */}

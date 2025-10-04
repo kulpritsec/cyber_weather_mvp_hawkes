@@ -1,6 +1,14 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from typing import Optional
+import numpy as np
+try:
+    from scipy.interpolate import griddata
+    from matplotlib import pyplot as plt
+    import matplotlib.patches as patches
+    CONTOURS_AVAILABLE = True
+except ImportError:
+    CONTOURS_AVAILABLE = False
 from ..db import SessionLocal
 from ..models import Nowcast, Forecast, HawkesParam, Advisory, GridCell
 from ..schemas import FeatureCollection, GeoFeature, AdvisoryOut
@@ -16,10 +24,11 @@ def get_db():
 
 @router.get("/data", response_model=FeatureCollection)
 def get_cyber_data(
-    mode: str = Query("nowcast", regex="^(nowcast|forecast|params)$"),
+    mode: str = Query("nowcast", regex="^(nowcast|forecast|params|contours)$"),
     vector: str = Query("ssh"), 
     horizon: Optional[int] = Query(24), 
-    res: float = Query(2.5), 
+    res: float = Query(2.5),
+    levels: Optional[int] = Query(5),
     db: Session = Depends(get_db)
 ):
     """Unified endpoint for all cyber weather data types"""
@@ -28,6 +37,8 @@ def get_cyber_data(
         return _get_nowcast_data(vector, res, db)
     elif mode == "forecast":
         return _get_forecast_data(vector, horizon or 24, res, db)
+    elif mode == "contours":
+        return _get_contour_data(vector, horizon or 24, res, levels or 5, db)
     elif mode == "params":
         return _get_params_data(vector, res, db)
     else:
@@ -127,3 +138,84 @@ def get_forecast_legacy(vector: str = Query("ssh"), horizon: int = Query(24), re
 def get_params_legacy(vector: str = Query("ssh"), res: float = Query(2.5), db: Session = Depends(get_db)):
     """Legacy params endpoint for backward compatibility"""
     return _get_params_data(vector, res, db)
+
+def _get_contour_data(vector: str, horizon: int, res: float, levels: int, db: Session) -> FeatureCollection:
+    """Generate contour lines from grid cell intensity data"""
+    if not CONTOURS_AVAILABLE:
+        return FeatureCollection(type="FeatureCollection", features=[])
+    
+    # Get grid data (use forecast data for contours)
+    cells = db.query(GridCell).all()
+    if not cells:
+        return FeatureCollection(type="FeatureCollection", features=[])
+    
+    # Collect lat, lon, intensity data
+    lats, lons, intensities = [], [], []
+    for cell in cells:
+        forecast = db.query(Forecast).filter_by(
+            grid_id=cell.id, vector=vector, horizon_h=horizon
+        ).first()
+        
+        if forecast and forecast.intensity > 0:
+            lats.append(cell.lat_center)
+            lons.append(cell.lon_center)
+            intensities.append(forecast.intensity)
+    
+    if len(lats) < 4:  # Need at least 4 points for interpolation
+        return FeatureCollection(type="FeatureCollection", features=[])
+    
+    # Create interpolation grid
+    lat_min, lat_max = min(lats), max(lats)
+    lon_min, lon_max = min(lons), max(lons)
+    
+    # Create a finer grid for smooth contours
+    grid_resolution = 50
+    lat_grid = np.linspace(lat_min, lat_max, grid_resolution)
+    lon_grid = np.linspace(lon_min, lon_max, grid_resolution)
+    lon_mesh, lat_mesh = np.meshgrid(lon_grid, lat_grid)
+    
+    # Interpolate intensity values
+    points = np.column_stack((lats, lons))
+    intensity_grid = griddata(points, intensities, (lat_mesh, lon_mesh), method='cubic', fill_value=0)
+    
+    # Generate contour levels
+    max_intensity = max(intensities)
+    contour_levels = np.linspace(0.1 * max_intensity, max_intensity, levels)
+    
+    # Generate contours using matplotlib
+    fig, ax = plt.subplots(figsize=(1, 1))
+    cs = ax.contour(lon_mesh, lat_mesh, intensity_grid, levels=contour_levels)
+    plt.close(fig)
+    
+    # Convert contours to GeoJSON features
+    features = []
+    for i, collection in enumerate(cs.collections):
+        contour_level = contour_levels[i] if i < len(contour_levels) else 0
+        for path in collection.get_paths():
+            # Convert matplotlib path to coordinates
+            vertices = path.vertices
+            if len(vertices) < 3:
+                continue
+                
+            coordinates = [[float(lon), float(lat)] for lon, lat in vertices]
+            
+            # Close the polygon if not already closed
+            if coordinates[0] != coordinates[-1]:
+                coordinates.append(coordinates[0])
+            
+            feature = GeoFeature(
+                type="Feature",
+                geometry={
+                    "type": "LineString",
+                    "coordinates": coordinates
+                },
+                properties={
+                    "contour_level": float(contour_level),
+                    "vector": vector,
+                    "horizon_h": horizon,
+                    "type": "contour"
+                }
+            )
+            features.append(feature)
+    
+    return FeatureCollection(type="FeatureCollection", features=features)
