@@ -28,6 +28,9 @@ def get_hawkes_params(vector: str = Query("ssh"), res: float = Query(2.5), db: S
             "beta": hp.beta,  # decay rate (1/hour)
             "n_br": hp.n_br,  # branching ratio (0-1)
             "alpha": hp.n_br * hp.beta,  # excitement coefficient
+            "mu_std": hp.mu_std or 0.0,  # uncertainty estimates
+            "beta_std": hp.beta_std or 0.0,
+            "n_br_std": hp.n_br_std or 0.0,
             "stability": "stable" if hp.n_br < 1.0 else "unstable",
             "updated_at": hp.updated_at.isoformat()
         }

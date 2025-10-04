@@ -9,6 +9,10 @@ class HawkesParams:
     mu: float
     beta: float
     n_br: float  # branching ratio in (0,1); alpha = n_br * beta
+    mu_std: float = 0.0  # uncertainty estimates
+    beta_std: float = 0.0
+    n_br_std: float = 0.0
+    
     @property
     def alpha(self): return self.n_br * self.beta
 
@@ -56,7 +60,7 @@ def _nll(theta: np.ndarray, t: np.ndarray, T: float) -> float:
         
     return -(log_sum - integ)
 
-def fit_hawkes_exponential(times: List[float], counts: List[int], T: float) -> HawkesParams:
+def fit_hawkes_exponential(times: List[float], counts: List[int], T: float, bootstrap_samples: int = 0) -> HawkesParams:
     t = _expand_times(times, counts)
     if len(t) < 2:
         rate = len(t)/max(T,1e-6); return HawkesParams(mu=max(1e-4, rate*0.5), beta=1.0, n_br=0.2)
@@ -79,7 +83,37 @@ def fit_hawkes_exponential(times: List[float], counts: List[int], T: float) -> H
         return HawkesParams(mu=max(rate*0.5,1e-4), beta=1.0, n_br=0.3)
         
     n_br = min(0.95, max(1e-3, n_br)); beta = max(1e-3, beta); mu = max(1e-6, mu)
-    return HawkesParams(mu=mu, beta=beta, n_br=n_br)
+    
+    # Bootstrap for uncertainty estimation
+    mu_std, beta_std, n_br_std = 0.0, 0.0, 0.0
+    if bootstrap_samples > 0 and len(t) > 10:
+        bootstrap_params = []
+        for _ in range(bootstrap_samples):
+            # Resample event times with replacement
+            bootstrap_t = np.random.choice(t, size=len(t), replace=True)
+            bootstrap_t = np.sort(bootstrap_t)
+            
+            try:
+                boot_res = minimize(lambda th: _nll(th, bootstrap_t, T), theta0, method="L-BFGS-B", bounds=bounds)
+                if boot_res.success:
+                    boot_log_mu, boot_log_beta, boot_gamma = boot_res.x
+                    boot_mu = math.exp(boot_log_mu)
+                    boot_beta = math.exp(boot_log_beta)
+                    boot_n_br = 1/(1+math.exp(-boot_gamma))
+                    boot_n_br = min(0.95, max(1e-3, boot_n_br))
+                    boot_beta = max(1e-3, boot_beta)
+                    boot_mu = max(1e-6, boot_mu)
+                    bootstrap_params.append((boot_mu, boot_beta, boot_n_br))
+            except:
+                continue
+        
+        if bootstrap_params:
+            bootstrap_params = np.array(bootstrap_params)
+            mu_std = float(np.std(bootstrap_params[:, 0]))
+            beta_std = float(np.std(bootstrap_params[:, 1]))
+            n_br_std = float(np.std(bootstrap_params[:, 2]))
+    
+    return HawkesParams(mu=mu, beta=beta, n_br=n_br, mu_std=mu_std, beta_std=beta_std, n_br_std=n_br_std)
 
 def mean_intensity_future(lambda_now: float, params: HawkesParams, horizon_h: float) -> float:
     kappa = max(1e-6, params.beta - params.alpha)

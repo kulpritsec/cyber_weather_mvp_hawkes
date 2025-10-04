@@ -1,5 +1,42 @@
 const BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
-export async function fetchNowcast(vector:string,res:number){ const r=await fetch(`${BASE}/v1/nowcast?vector=${encodeURIComponent(vector)}&res=${res}`); if(!r.ok) throw new Error('nowcast'); return r.json() }
-export async function fetchForecast(vector:string,horizon:number,res:number){ const r=await fetch(`${BASE}/v1/forecast?vector=${encodeURIComponent(vector)}&horizon=${horizon}&res=${res}`); if(!r.ok) throw new Error('forecast'); return r.json() }
-export async function fetchAdvisories(vector:string){ const r=await fetch(`${BASE}/v1/advisories?vector=${encodeURIComponent(vector)}`); if(!r.ok) throw new Error('advisories'); return r.json() }
-export async function fetchParams(vector:string,res:number){ const r=await fetch(`${BASE}/v1/params?vector=${encodeURIComponent(vector)}&res=${res}`); if(!r.ok) throw new Error('params'); return r.json() }
+
+// Unified API endpoint
+export async function fetchCyberData(mode: string, vector: string, horizon?: number, res: number = 2.5) {
+  const params = new URLSearchParams({
+    mode,
+    vector,
+    res: res.toString()
+  })
+  if (mode === 'forecast' && horizon) {
+    params.append('horizon', horizon.toString())
+  }
+  
+  const r = await fetch(`${BASE}/v1/data?${params}`)
+  if (!r.ok) throw new Error(`Failed to fetch ${mode} data`)
+  return r.json()
+}
+
+// Legacy API functions for backward compatibility
+export async function fetchNowcast(vector: string, res: number) { 
+  return fetchCyberData('nowcast', vector, undefined, res)
+}
+
+export async function fetchForecast(vector: string, horizon: number, res: number) { 
+  return fetchCyberData('forecast', vector, horizon, res)
+}
+
+export async function fetchParams(vector: string, res: number) { 
+  return fetchCyberData('params', vector, undefined, res)
+}
+
+export async function fetchAdvisories(vector: string) { 
+  const r = await fetch(`${BASE}/v1/advisories?vector=${encodeURIComponent(vector)}`)
+  if (!r.ok) throw new Error('advisories')
+  return r.json()
+}
+
+export async function fetchHealth() {
+  const r = await fetch(`${BASE}/health`)
+  if (!r.ok) throw new Error('health check failed')
+  return r.json()
+}

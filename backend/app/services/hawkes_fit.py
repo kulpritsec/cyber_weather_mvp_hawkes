@@ -55,13 +55,16 @@ def run(hours: int = 24, min_events: int = 50, vectors=("ssh","rdp","http","dns_
         times, counts, T = _event_series_for_cell(session, cell, vector, start, now)
         if sum(counts) < min_events: continue
 
-        params = fit_hawkes_exponential(times, counts, T)
+        params = fit_hawkes_exponential(times, counts, T, bootstrap_samples=20)
 
         hp = session.query(HawkesParam).filter_by(grid_id=cell.id, vector=vector).first()
         if hp:
-            hp.mu, hp.beta, hp.n_br, hp.updated_at = params.mu, params.beta, params.n_br, now
+            hp.mu, hp.beta, hp.n_br = params.mu, params.beta, params.n_br
+            hp.mu_std, hp.beta_std, hp.n_br_std = params.mu_std, params.beta_std, params.n_br_std
+            hp.updated_at = now
         else:
-            session.add(HawkesParam(grid_id=cell.id, vector=vector, mu=params.mu, beta=params.beta, n_br=params.n_br, updated_at=now))
+            session.add(HawkesParam(grid_id=cell.id, vector=vector, mu=params.mu, beta=params.beta, n_br=params.n_br,
+                                   mu_std=params.mu_std, beta_std=params.beta_std, n_br_std=params.n_br_std, updated_at=now))
 
         nc = session.query(Nowcast).filter_by(grid_id=cell.id, vector=vector).first()
         lambda_now = nc.intensity if nc else params.mu

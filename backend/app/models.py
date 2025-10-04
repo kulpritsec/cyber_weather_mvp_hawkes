@@ -72,6 +72,9 @@ class HawkesParam(Base):
     mu = Column(Float)     # per-hour baseline
     beta = Column(Float)   # per-hour decay
     n_br = Column(Float)   # branching ratio in (0,1); alpha = n_br * beta
+    mu_std = Column(Float, default=0.0)    # uncertainty estimates
+    beta_std = Column(Float, default=0.0)
+    n_br_std = Column(Float, default=0.0)
     updated_at = Column(DateTime)
     grid = relationship("GridCell")
 

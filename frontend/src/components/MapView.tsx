@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { MapContainer, TileLayer, Polygon, Polyline, Tooltip } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
-import { fetchNowcast, fetchForecast, fetchParams } from '../lib/api'
+import { fetchCyberData } from '../lib/api'
 import { colorFor } from '../lib/colors'
 import { generateContours } from '../lib/contours'
 
@@ -12,27 +12,29 @@ export default function MapView({ vector, mode, horizon, res }:{vector:string,mo
   
   useEffect(()=>{ 
     setLoading(true)
-    let p
-    if (mode === 'params') {
-      p = fetchParams(vector, res)
-    } else {
-      p = mode==='nowcast'?fetchNowcast(vector,res):fetchForecast(vector,horizon,res)
-    }
-    p.then(data => {
-      setGeo(data)
-      // Generate contours for intensity data
-      if (mode !== 'params' && data.features) {
-        const gridPoints = data.features.map((f: any) => ({
-          lat: (f.properties.lat_min + f.properties.lat_max) / 2,
-          lon: (f.properties.lon_min + f.properties.lon_max) / 2,
-          value: f.properties.pressure ?? f.properties.normalized ?? 0
-        }))
-        const contourLines = generateContours(gridPoints)
-        setContours(contourLines)
-      } else {
-        setContours([])
-      }
-    }).catch(e=>setErr(String(e))).finally(()=>setLoading(false)) 
+    fetchCyberData(mode, vector, horizon, res)
+      .then(data => {
+        setGeo(data)
+        // Generate contours for intensity data
+        if (mode !== 'params' && data.features) {
+          const gridPoints = data.features.map((f: any) => {
+            const bounds = f.geometry.coordinates[0]
+            const lats = bounds.map((p: number[]) => p[1])
+            const lons = bounds.map((p: number[]) => p[0])
+            return {
+              lat: (Math.min(...lats) + Math.max(...lats)) / 2,
+              lon: (Math.min(...lons) + Math.max(...lons)) / 2,
+              value: f.properties.pressure ?? f.properties.normalized ?? 0
+            }
+          })
+          const contourLines = generateContours(gridPoints)
+          setContours(contourLines)
+        } else {
+          setContours([])
+        }
+      })
+      .catch(e=>setErr(String(e)))
+      .finally(()=>setLoading(false))
   },[vector,mode,horizon,res])
   
   return (<div className="map-container">
@@ -49,9 +51,9 @@ export default function MapView({ vector, mode, horizon, res }:{vector:string,mo
           return (<Polygon key={f.properties.grid_id+'-'+f.properties.vector} pathOptions={{color,weight:1,fillColor:color,fillOpacity:0.4}} positions={coords}>
             <Tooltip><div style={{fontSize:12}}>
               <div><b>Grid:</b> {f.properties.grid_id}</div>
-              <div><b>μ (baseline):</b> {f.properties.mu?.toFixed(3)} events/hr</div>
-              <div><b>β (decay):</b> {f.properties.beta?.toFixed(3)} /hr</div>
-              <div><b>n (branching):</b> {f.properties.n_br?.toFixed(3)}</div>
+              <div><b>μ (baseline):</b> {f.properties.mu?.toFixed(3)} ± {(f.properties.mu_std || 0).toFixed(3)} events/hr</div>
+              <div><b>β (decay):</b> {f.properties.beta?.toFixed(3)} ± {(f.properties.beta_std || 0).toFixed(3)} /hr</div>
+              <div><b>n (branching):</b> {f.properties.n_br?.toFixed(3)} ± {(f.properties.n_br_std || 0).toFixed(3)}</div>
               <div><b>α (excitement):</b> {f.properties.alpha?.toFixed(3)}</div>
               <div><b>Stability:</b> {f.properties.stability}</div>
               <div><b>Updated:</b> {f.properties.updated_at}</div>

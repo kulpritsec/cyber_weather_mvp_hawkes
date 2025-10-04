@@ -8,7 +8,7 @@ function Header(){ return <div className="header"><h3>🌐 Cyber Weather</h3><di
 
 export default function App(){
   const [vector, setVector] = useState('ssh')
-  const [mode, setMode] = useState<'nowcast' | 'forecast'>('nowcast')
+  const [mode, setMode] = useState<'nowcast' | 'forecast' | 'params'>('nowcast')
   const [horizon, setHorizon] = useState(24)
   const [res, setRes] = useState(2.5)
   const [advisories, setAdvisories] = useState<any[]>([])
