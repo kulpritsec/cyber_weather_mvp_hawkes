@@ -9,7 +9,16 @@ from functools import lru_cache
 class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite:///./cyber_weather.db"
-    
+
+    # MaxMind GeoLite2 Configuration
+    maxmind_db_path: str = "/data/GeoLite2-City.mmdb"  # Path to MaxMind database
+
+    # CTI Feed Configuration
+    greynoise_api_key: Optional[str] = None  # GreyNoise Community/Enterprise API key
+    ingest_interval_min: int = 15  # Minutes between ingest cycles
+    fit_interval_min: int = 60  # Minutes between Hawkes fitting cycles
+    min_events_fit: int = 50  # Minimum events per cell to attempt fitting
+
     # Grid configuration
     grid_resolution_deg: float = 2.5
     
