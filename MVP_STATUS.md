@@ -379,3 +379,16 @@ Backend endpoints are live and tested.
 Mock data generators enable rapid testing.
 
 **Time to MVP: 8-11 focused hours** ⏱️
+
+---
+
+## Predictive Threat Intelligence Panel (February 2026)
+
+Four-tab predictive intelligence layer providing forward-looking threat weather forecasts:
+
+- **Bayesian Attack Graph**: 27 MITRE ATT&CK techniques across 12 tactical phases with 39 conditional transition edges. Click techniques observed in CTI feeds; posterior probabilities propagate forward via belief propagation to predict likely next techniques.
+- **Supply Chain Blast Radius**: 8 SLTT-critical products (FortiGate 890 SLTTs, Tyler Tech 1,200, MOVEit 340, etc.) with exploitation status, CVE tracking, and blast radius bars showing MS-ISAC member exposure.
+- **Geopolitical Tension Indices**: CN (0.78, x1.35), RU (0.85, x1.55), IR (0.65, x1.20), KP (0.72, x1.15) — tension levels modulate Hawkes baseline rates per vector through computed cyber multipliers.
+- **Monte Carlo Simulation Engine**: lambda_sim(t) = mu*S(t)*G(t) + SC_shock + sum(offspring). Configurable vector/horizon/sim count. Produces fan charts (50%/90% CI) and per-vector weather categories (Cat 1 Clear through Cat 5 Emergency).
+
+Integration: Geopolitical multipliers feed simulation baseline. Supply chain shocks inject Bernoulli intensity spikes. Weather categories map to globe visual intensity. Attack graph extends Hawkes univariate self-excitation to multivariate cross-vector probability propagation.

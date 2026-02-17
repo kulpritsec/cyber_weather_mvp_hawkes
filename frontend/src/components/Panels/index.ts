@@ -35,3 +35,4 @@ export { default as InfrastructurePanel } from './InfrastructurePanel';
 
 // Predictive Threat Intelligence
 export { default as PredictiveThreatIntelPanel } from './PredictiveThreatIntelPanel';
+export { default as PredictiveThreatPanel } from './PredictiveThreatIntelPanel';
