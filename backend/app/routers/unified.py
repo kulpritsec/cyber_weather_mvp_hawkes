@@ -27,7 +27,7 @@ def get_db():
 
 @router.get("/data", response_model=FeatureCollection)
 def get_cyber_data(
-    mode: str = Query("nowcast", regex="^(nowcast|forecast|params|contours)$"),
+    mode: str = Query("nowcast", pattern="^(nowcast|forecast|params|contours)$"),
     vector: str = Query("ssh"), 
     horizon: Optional[int] = Query(24), 
     res: float = Query(2.5),
@@ -777,7 +777,7 @@ def get_context_campaigns():
 
 @router.get("/context/forecast")
 def get_context_forecast(
-    vector: str = Query("ssh", regex="^(ssh|rdp|http|dns_amp|brute_force|botnet_c2|ransomware)$"),
+    vector: str = Query("ssh", pattern="^(ssh|rdp|http|dns_amp|brute_force|botnet_c2|ransomware)$"),
     days: int = Query(30, ge=1, le=90),
     db: Session = Depends(get_db),
 ):
