@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 # Force in-memory DB before any app imports
 os.environ["CYBER_WEATHER_DATABASE_URL"] = "sqlite://"
 
-from app.core.database import Base
+from app.db import Base
 from app.models import (
     Event, GridCell, Nowcast, Forecast, ForecastSnapshot,
     HawkesParam, Advisory, VectorConfig,

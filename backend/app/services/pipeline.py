@@ -23,7 +23,7 @@ from sqlalchemy import func
 
 from ..core.database import SessionLocal
 from ..core.config import get_settings
-from ..models import Event, HawkesParam, Advisory
+from ..models import Event, HawkesParam, Advisory, ForecastSnapshot, VectorConfig
 from ..ingest import dshield, greynoise, abusech
 
 logger = logging.getLogger(__name__)
@@ -144,8 +144,9 @@ async def run_fitting_cycle() -> Dict[str, Any]:
     }
 
     try:
-        # Define vectors to process (hardcoded for now)
-        vectors = ["ssh", "rdp", "http", "dns_amp", "brute_force", "botnet_c2", "ransomware"]
+        # Read active vectors from VectorConfig table; fall back to seed list
+        vc_rows = session.query(VectorConfig).filter(VectorConfig.is_active == True).order_by(VectorConfig.sort_order).all()
+        vectors = [r.name for r in vc_rows] if vc_rows else ["ssh", "rdp", "http", "dns_amp", "brute_force", "botnet_c2", "ransomware"]
         results["vectors_processed"] = vectors
 
         # Import Hawkes fitting service
@@ -170,6 +171,25 @@ async def run_fitting_cycle() -> Dict[str, Any]:
         from .aggregator import recompute_all_nowcasts
         logger.info("Recomputing nowcasts...")
         recompute_all_nowcasts(session)
+
+        # Write ForecastSnapshot rows for temporal replay
+        snap_at = datetime.now(timezone.utc)
+        snap_count = 0
+        params_all = session.query(HawkesParam).all()
+        for p in params_all:
+            if p.mu and p.mu > 0:
+                snap = ForecastSnapshot(
+                    run_id=results["run_id"],
+                    grid_id=p.grid_id,
+                    vector=p.vector,
+                    horizon_h=0,
+                    mu_base=p.mu,
+                    mu_t=p.mu,   # covariates applied at query time by the PCE
+                    snapshot_at=snap_at,
+                )
+                session.add(snap)
+                snap_count += 1
+        logger.info(f"✓ Wrote {snap_count} ForecastSnapshot rows (run_id={results['run_id'][:8]}…)")
 
         session.commit()
 
