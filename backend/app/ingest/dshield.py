@@ -15,7 +15,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
-from ..models import Event, GridCell, VectorConfig
+from ..models import Event, GridCell
 from ..core.database import get_db
 from .geolocation import geolocate
 
@@ -57,15 +57,10 @@ class DShieldIngestor:
             await self.http_session.close()
 
     def _map_port_to_vector(self, port: int) -> Optional[str]:
-        """Map destination port to attack vector using VectorConfig"""
-        # First check our static map
+        """Map destination port to attack vector"""
+        # Check our static map
         if port in PORT_VECTOR_MAP:
             return PORT_VECTOR_MAP[port]
-
-        # Fallback to database VectorConfig lookup
-        vector_config = self.session.query(VectorConfig).filter(
-            VectorConfig.enabled == True
-        ).all()
 
         # Could add port range matching logic here if needed
         return None

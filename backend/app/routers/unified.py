@@ -123,6 +123,12 @@ def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "cyber-weather-api", "version": "0.3.0"}
 
+@router.get("/pipeline/status")
+def get_pipeline_status():
+    """Get pipeline orchestrator health status and scheduler information"""
+    from ..services.pipeline import get_pipeline_status
+    return get_pipeline_status()
+
 # Legacy compatibility endpoints
 @router.get("/nowcast", response_model=FeatureCollection)
 def get_nowcast_legacy(vector: str = Query("ssh"), res: float = Query(2.5), db: Session = Depends(get_db)):
