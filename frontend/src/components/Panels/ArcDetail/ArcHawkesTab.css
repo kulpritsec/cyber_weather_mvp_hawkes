@@ -1,0 +1,136 @@
+/* Arc Hawkes Tab */
+.arc-hawkes-tab {
+  color: #E0EAF8;
+}
+
+/* Hawkes Parameters Table */
+.hawkes-params-table {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.param-row {
+  display: grid;
+  grid-template-columns: 60px 1fr 200px;
+  gap: 16px;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.param-row:last-child {
+  border-bottom: none;
+}
+
+.param-row-highlight {
+  background: rgba(79, 70, 229, 0.1);
+  border-top: 1px solid rgba(79, 70, 229, 0.3);
+  border-bottom: 1px solid rgba(79, 70, 229, 0.3);
+}
+
+.param-symbol {
+  font-size: 20px;
+  font-weight: 700;
+  font-family: 'Times New Roman', serif;
+  color: #FFFFFF;
+  text-align: center;
+}
+
+.param-name {
+  color: #8B92A4;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.param-value {
+  color: #FFFFFF;
+  font-size: 15px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  text-align: right;
+}
+
+/* Threshold Legend */
+.threshold-legend {
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #8B92A4;
+}
+
+.legend-dash {
+  width: 20px;
+  height: 0;
+  border-top-width: 2px;
+  border-top-style: dashed;
+}
+
+/* Process Interpretation */
+.process-interpretation {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 16px 20px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  line-height: 1.7;
+}
+
+.process-interpretation p {
+  margin: 0 0 14px 0;
+  font-size: 13px;
+  color: #E0EAF8;
+}
+
+.process-interpretation p:last-child {
+  margin-bottom: 0;
+}
+
+.process-interpretation strong {
+  color: #FFFFFF;
+  font-weight: 700;
+}
+
+.stability-summary {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 14px !important;
+}
+
+.stability-stable {
+  color: #10B981;
+  font-weight: 700;
+}
+
+.stability-unstable {
+  color: #F59E0B;
+  font-weight: 700;
+}
+
+.stability-critical {
+  color: #EF4444;
+  font-weight: 700;
+  animation: pulse-critical 2s ease-in-out infinite;
+}
+
+@keyframes pulse-critical {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}

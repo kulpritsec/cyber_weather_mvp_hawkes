@@ -1,0 +1,313 @@
+/* Arc ATT&CK Tab */
+.arc-attack-tab {
+  color: #E0EAF8;
+}
+
+/* Attack Techniques Grid */
+.attack-techniques-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.attack-technique {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: all 0.2s ease;
+}
+
+.attack-technique:hover {
+  background: rgba(0, 0, 0, 0.3);
+  border-color: rgba(79, 70, 229, 0.5);
+  transform: translateY(-2px);
+}
+
+.tech-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.tech-id {
+  font-size: 12px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  color: #60A5FA;
+  background: rgba(59, 130, 246, 0.15);
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.tech-tactic {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 3px 8px;
+  border-radius: 3px;
+}
+
+.tech-tactic[data-tactic="initial access"] {
+  background: rgba(239, 68, 68, 0.2);
+  color: #FCA5A5;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.tech-tactic[data-tactic="credential access"] {
+  background: rgba(245, 158, 11, 0.2);
+  color: #FCD34D;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.tech-tactic[data-tactic="lateral movement"] {
+  background: rgba(168, 85, 247, 0.2);
+  color: #C084FC;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.tech-tactic[data-tactic="persistence"] {
+  background: rgba(34, 197, 94, 0.2);
+  color: #4ADE80;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.tech-name {
+  color: #FFFFFF;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+.tech-link {
+  color: #60A5FA;
+  font-size: 12px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: color 0.2s ease;
+}
+
+.tech-link:hover {
+  color: #93C5FD;
+  text-decoration: underline;
+}
+
+.no-techniques {
+  color: #8B92A4;
+  font-size: 13px;
+  font-style: italic;
+  padding: 20px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Threat Groups List */
+.threat-groups-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.threat-group-card {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.threat-group-primary {
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.group-name {
+  color: #FFFFFF;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.group-confidence {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: rgba(239, 68, 68, 0.2);
+  color: #FCA5A5;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.group-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.group-detail-item {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.detail-label {
+  color: #8B92A4;
+  font-weight: 600;
+  min-width: 120px;
+}
+
+.detail-value {
+  color: #E0EAF8;
+}
+
+/* Cyber Kill Chain Visualization */
+.kill-chain-visualization {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.kill-chain-phase {
+  display: grid;
+  grid-template-columns: 40px 1fr 40px;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: all 0.2s ease;
+}
+
+.kill-chain-phase:last-child {
+  border-bottom: none;
+}
+
+.phase-inactive {
+  opacity: 0.4;
+}
+
+.phase-active {
+  opacity: 1;
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.phase-current {
+  background: rgba(79, 70, 229, 0.15);
+  border-top: 1px solid rgba(79, 70, 229, 0.3);
+  border-bottom: 1px solid rgba(79, 70, 229, 0.3);
+}
+
+.phase-number {
+  color: #8B92A4;
+  font-size: 14px;
+  font-weight: 700;
+  font-family: 'Courier New', monospace;
+  text-align: center;
+}
+
+.phase-active .phase-number {
+  color: #60A5FA;
+}
+
+.phase-current .phase-number {
+  color: #A78BFA;
+}
+
+.phase-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.phase-name {
+  color: #E0EAF8;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.phase-active .phase-name {
+  color: #FFFFFF;
+}
+
+.phase-indicator {
+  color: #A78BFA;
+  font-size: 12px;
+  font-weight: 700;
+  animation: pulse-indicator 2s ease-in-out infinite;
+}
+
+@keyframes pulse-indicator {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.phase-status {
+  color: #10B981;
+  font-size: 16px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.phase-inactive .phase-status {
+  color: #374151;
+}
+
+/* Kill Chain Legend */
+.kill-chain-legend {
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  margin-top: 16px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #8B92A4;
+}
+
+.legend-box {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.legend-box-active {
+  background: rgba(59, 130, 246, 0.3);
+  border-color: rgba(59, 130, 246, 0.5);
+}
+
+.legend-box-current {
+  background: rgba(79, 70, 229, 0.3);
+  border-color: rgba(79, 70, 229, 0.5);
+}
+
+.legend-box-inactive {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+}

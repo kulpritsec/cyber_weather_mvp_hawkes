@@ -1,0 +1,105 @@
+/* Arc Network Tab */
+.arc-network-tab {
+  color: #E0EAF8;
+}
+
+/* Network Info Card */
+.network-info-card {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.network-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  font-size: 13px;
+}
+
+.network-info-row:not(:last-child) {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.info-label {
+  color: #8B92A4;
+  font-weight: 600;
+  min-width: 100px;
+}
+
+.info-value {
+  color: #E0EAF8;
+  text-align: right;
+}
+
+.info-monospace {
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  color: #60A5FA;
+}
+
+/* Port Distribution Chart */
+.port-distribution-chart {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.port-bar-container {
+  display: grid;
+  grid-template-columns: 80px 1fr 60px;
+  align-items: center;
+  gap: 12px;
+}
+
+.port-label {
+  color: #8B92A4;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'Courier New', monospace;
+}
+
+.port-bar-wrapper {
+  height: 20px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.port-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3B82F6, #60A5FA);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.port-percentage {
+  color: #E0EAF8;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
+  font-family: 'Courier New', monospace;
+}
+
+/* Packet Timeline Container */
+.packet-timeline-container {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.no-timeline-data {
+  color: #8B92A4;
+  font-size: 13px;
+  font-style: italic;
+  padding: 20px;
+  text-align: center;
+}
