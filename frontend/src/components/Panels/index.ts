@@ -32,3 +32,6 @@ export { PredictiveContextPanel } from './PredictiveContextPanel';
 // Math Lab & Infrastructure
 export { default as MathLabPanel } from './MathLabPanel';
 export { default as InfrastructurePanel } from './InfrastructurePanel';
+
+// Predictive Threat Intelligence
+export { default as PredictiveThreatIntelPanel } from './PredictiveThreatIntelPanel';

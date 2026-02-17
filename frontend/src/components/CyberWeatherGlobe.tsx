@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { fetchCyberData, fetchAdvisories } from "../lib/api";
 
 // ─── PANEL IMPORTS ───────────────────────────────────────────────────────
-import { ArcDetailPanel, HotspotCellPanel, PredictiveContextPanel, MathLabPanel, InfrastructurePanel } from './Panels';
+import { ArcDetailPanel, HotspotCellPanel, PredictiveContextPanel, MathLabPanel, InfrastructurePanel, PredictiveThreatIntelPanel } from './Panels';
 import type { ArcData, HotspotCellData } from './Panels';
 import { TemporalReplayControls } from './ReplayControls';
 import {
@@ -658,6 +658,7 @@ export default function CyberWeatherGlobe() {
   const [showContextEngine, setShowContextEngine] = useState(false);
   const [showMathLab, setShowMathLab] = useState(false);
   const [showInfrastructure, setShowInfrastructure] = useState(false);
+  const [showThreatIntel, setShowThreatIntel] = useState(false);
   const [selectedArc, setSelectedArc] = useState<ArcData | null>(null);
   const [arcPanelPos, setArcPanelPos] = useState({ x: 0, y: 0 });
   const [selectedCell, setSelectedCell] = useState<HotspotCellData | null>(null);
@@ -750,7 +751,7 @@ export default function CyberWeatherGlobe() {
   // ─── KEYBOARD SHORTCUTS ───────────────────────────────────────────────
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setSelectedArc(null); setSelectedCell(null); setShowContextEngine(false); setShowMathLab(false); setShowInfrastructure(false); }
+      if (e.key === 'Escape') { setSelectedArc(null); setSelectedCell(null); setShowContextEngine(false); setShowMathLab(false); setShowInfrastructure(false); setShowThreatIntel(false); }
       if (e.key === 'l' || e.key === 'L') setIsLiveMode((v) => !v);
     };
     window.addEventListener('keydown', handleKey);
@@ -942,6 +943,24 @@ export default function CyberWeatherGlobe() {
             </div>
           </button>
 
+          <button
+            onClick={() => setShowThreatIntel((v) => !v)}
+            style={{
+              display: "flex", flexDirection: "column", alignItems: "center",
+              padding: "6px 14px", borderRadius: "4px",
+              background: showThreatIntel ? "rgba(239,68,68,0.15)" : "rgba(239,68,68,0.05)",
+              border: `1px solid ${showThreatIntel ? "rgba(239,68,68,0.5)" : "rgba(239,68,68,0.2)"}`,
+              cursor: "pointer", transition: "background 0.15s, border-color 0.15s",
+            }}
+          >
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "9px", color: "rgba(239,68,68,0.6)", letterSpacing: "0.15em", marginBottom: "2px" }}>
+              PREDICT
+            </div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "13px", fontWeight: 800, color: showThreatIntel ? "#ef4444" : "rgba(239,68,68,0.6)", letterSpacing: "0.08em" }}>
+              ⚡ PTI
+            </div>
+          </button>
+
           <div
             style={{
               padding: "6px 16px",
@@ -1097,6 +1116,11 @@ export default function CyberWeatherGlobe() {
       {/* ─── INFRASTRUCTURE TOPOLOGY ─── */}
       {showInfrastructure && (
         <InfrastructurePanel onClose={() => setShowInfrastructure(false)} />
+      )}
+
+      {/* ─── PREDICTIVE THREAT INTELLIGENCE ─── */}
+      {showThreatIntel && (
+        <PredictiveThreatIntelPanel onClose={() => setShowThreatIntel(false)} />
       )}
 
       {/* ─── ARC DETAIL PANEL ─── */}
