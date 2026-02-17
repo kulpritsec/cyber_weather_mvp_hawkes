@@ -1,0 +1,18 @@
+export const PANEL_TOKENS = {
+  bg: 'rgba(8, 15, 28, 0.97)',
+  bgAlt: 'rgba(10, 20, 40, 0.85)',
+  border: 'rgba(0, 180, 255, 0.18)',
+  borderLit: 'rgba(0, 180, 255, 0.30)',
+  text: '#e0eaf8',
+  textMuted: '#5a7da8',
+  textDim: '#283848',
+  textBright: '#e4f0ff',
+  accent: '#00ccff',
+  accentAlt: '#6366f1',
+  normal: '#22c55e',
+  warning: '#eab308',
+  danger: '#ef4444',
+  info: '#3b82f6',
+  mono: "'JetBrains Mono', 'Fira Code', monospace" as const,
+  serif: "'Crimson Pro', 'Georgia', serif" as const,
+} as const;
