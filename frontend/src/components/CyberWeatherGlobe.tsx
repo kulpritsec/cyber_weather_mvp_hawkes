@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { fetchCyberData, fetchAdvisories } from "../lib/api";
 
 // ─── PANEL IMPORTS ───────────────────────────────────────────────────────
-import { ArcDetailPanel, HotspotCellPanel } from './Panels';
+import { ArcDetailPanel, HotspotCellPanel, PredictiveContextPanel } from './Panels';
 import type { ArcData, HotspotCellData } from './Panels';
 import { TemporalReplayControls } from './ReplayControls';
 import {
@@ -655,6 +655,7 @@ export default function CyberWeatherGlobe() {
   const [eps, setEps] = useState(0);
 
   // Panel state
+  const [showContextEngine, setShowContextEngine] = useState(false);
   const [selectedArc, setSelectedArc] = useState<ArcData | null>(null);
   const [arcPanelPos, setArcPanelPos] = useState({ x: 0, y: 0 });
   const [selectedCell, setSelectedCell] = useState<HotspotCellData | null>(null);
@@ -747,7 +748,7 @@ export default function CyberWeatherGlobe() {
   // ─── KEYBOARD SHORTCUTS ───────────────────────────────────────────────
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setSelectedArc(null); setSelectedCell(null); }
+      if (e.key === 'Escape') { setSelectedArc(null); setSelectedCell(null); setShowContextEngine(false); }
       if (e.key === 'l' || e.key === 'L') setIsLiveMode((v) => !v);
     };
     window.addEventListener('keydown', handleKey);
@@ -869,7 +870,7 @@ export default function CyberWeatherGlobe() {
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "24px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
           <div style={{ textAlign: "right" }}>
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "18px", color: COLORS.textPrimary, fontWeight: 700, letterSpacing: "0.05em" }}>
               {timeStr}
@@ -877,6 +878,30 @@ export default function CyberWeatherGlobe() {
             </div>
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "9px", color: COLORS.textSecondary, letterSpacing: "0.06em" }}>{dateStr.toUpperCase()}</div>
           </div>
+
+          {/* ─── CONTEXT ENGINE BUTTON ─── */}
+          <button
+            onClick={() => setShowContextEngine((v) => !v)}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              padding: "6px 14px",
+              borderRadius: "4px",
+              background: showContextEngine ? "rgba(99,102,241,0.2)" : "rgba(99,102,241,0.08)",
+              border: `1px solid ${showContextEngine ? "rgba(99,102,241,0.7)" : "rgba(99,102,241,0.3)"}`,
+              cursor: "pointer",
+              transition: "background 0.15s, border-color 0.15s",
+            }}
+          >
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "9px", color: "rgba(165,180,252,0.7)", letterSpacing: "0.15em", marginBottom: "2px" }}>
+              CONTEXT ENGINE
+            </div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "13px", fontWeight: 800, color: showContextEngine ? "#a5b4fc" : "#6366f1", letterSpacing: "0.08em" }}>
+              ◈ μ(t)
+            </div>
+          </button>
+
           <div
             style={{
               padding: "6px 16px",
@@ -1018,6 +1043,11 @@ export default function CyberWeatherGlobe() {
           </div>
         </div>
       </div>
+
+      {/* ─── PREDICTIVE CONTEXT ENGINE ─── */}
+      {showContextEngine && (
+        <PredictiveContextPanel onClose={() => setShowContextEngine(false)} />
+      )}
 
       {/* ─── ARC DETAIL PANEL ─── */}
       {selectedArc && (

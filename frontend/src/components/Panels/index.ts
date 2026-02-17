@@ -25,3 +25,6 @@ export type {
 // Hotspot Cell Panel
 export { default as HotspotCellPanel } from './HotspotCellPanel';
 export type { HotspotCellData } from './HotspotCellPanel';
+
+// Predictive Context Engine
+export { PredictiveContextPanel } from './PredictiveContextPanel';
