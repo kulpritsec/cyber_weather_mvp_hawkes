@@ -2,6 +2,21 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import * as THREE from "three";
 import { fetchCyberData, fetchAdvisories } from "../lib/api";
 
+// ─── PANEL IMPORTS ───────────────────────────────────────────────────────
+import { ArcDetailPanel, HotspotCellPanel } from './Panels';
+import type { ArcData, HotspotCellData } from './Panels';
+import { TemporalReplayControls } from './ReplayControls';
+import {
+  calculatePanelPosition,
+  raycastArcs,
+  raycastGlobe,
+  getMouseNDC,
+  latLonToGridCell,
+  fetchCellHistory,
+  enhanceArcWithIntelligence,
+  generateMockHotspotData,
+} from '../utils';
+
 // ─── DESIGN SYSTEM ──────────────────────────────────────────────────────
 const COLORS = {
   bg: "#050a12",
@@ -79,6 +94,7 @@ interface Hotspot {
   vector: string;
   intensity: number;
   n_br: number;
+  severity?: number;
 }
 
 interface VectorStats {
@@ -239,6 +255,7 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
   const globeRef = useRef<THREE.Mesh | null>(null);
   const mouseRef = useRef({ x: 0, y: 0, down: false, lastX: 0, lastY: 0 });
   const rotRef = useRef({ x: 0.3, y: 0, autoRotate: true });
+  const arcsGroupRef = useRef<THREE.Group | null>(null);
 
   useEffect(() => {
     if (!canvasRef.current || !containerRef.current) return;
@@ -359,6 +376,69 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
       scene.add(ring);
     });
 
+    // ─── ARC CONNECTIONS ──────────────────────────────────────────────
+    const arcsGroup = new THREE.Group();
+    scene.add(arcsGroup);
+    arcsGroupRef.current = arcsGroup;
+
+    // Inline time-series helpers (no external imports needed inside effect)
+    const genSeries = (base: number, count = 48) =>
+      Array.from({ length: count }, (_, k) => ({
+        timestamp: Date.now() - (count - k) * 3600000,
+        value: Math.max(0, base + (Math.random() - 0.5) * 20),
+      }));
+    const genBrSeries = (base: number, count = 48) =>
+      Array.from({ length: count }, (_, k) => ({
+        timestamp: Date.now() - (count - k) * 3600000,
+        value: Math.min(0.99, Math.max(0.1, base + (Math.random() - 0.5) * 0.1)),
+      }));
+
+    const arcPairs = hotspots.slice(0, Math.min(hotspots.length, 8));
+    for (let i = 0; i < arcPairs.length; i++) {
+      const src = arcPairs[i];
+      const tgt = arcPairs[(i + 2) % arcPairs.length];
+      if (src.lat === tgt.lat && src.lon === tgt.lon) continue;
+
+      const curve = createArcCurve(src, tgt, R);
+      const tubeGeo = new THREE.TubeGeometry(curve, 40, 0.003, 6, false);
+      const col = new THREE.Color(VECTOR_COLORS[src.vector] || COLORS.textAccent);
+      const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.65 });
+      const tube = new THREE.Mesh(tubeGeo, mat);
+
+      const baseArc: Partial<ArcData> = {
+        id: `arc_${i}_${src.vector}_${Date.now()}`,
+        sourceCell: { cellId: i * 100, lat: src.lat, lon: src.lon, country: src.name },
+        targetCell: { cellId: (i + 2) * 100, lat: tgt.lat, lon: tgt.lon, country: tgt.name },
+        vector: src.vector,
+        packets: Math.floor(src.intensity * 1500000 + 500000),
+        bandwidth: Math.floor(src.intensity * 3000000000 + 500000000),
+        confidence: Math.min(0.99, 0.7 + src.n_br * 0.25),
+        firstSeen: new Date(Date.now() - Math.random() * 48 * 3600000),
+        intensityHistory: genSeries(src.intensity * 80 + 20),
+        hawkesParams: {
+          mu: 0.1 + src.n_br * 0.2,
+          muStd: 0.02,
+          beta: 0.4 + src.n_br * 0.3,
+          betaStd: 0.05,
+          nBr: src.n_br,
+          nBrStd: 0.08,
+          stability: src.n_br >= 0.7 ? 'unstable' : 'stable',
+        },
+        branchingHistory: genBrSeries(src.n_br),
+        attackMapping: { techniques: [], killChainPhase: [] },
+        networkDetails: {
+          source: { lat: src.lat, lon: src.lon, asn: 'AS-Unknown', network: '0.0.0.0/0', country: src.name },
+          target: { lat: tgt.lat, lon: tgt.lon, asn: 'AS-Unknown', network: '0.0.0.0/0', country: tgt.name },
+          portDistribution: { 22: 560, 80: 350, 443: 225 },
+          packetTimeline: [],
+        },
+      };
+
+      const arcData = enhanceArcWithIntelligence(baseArc, src.vector, '', '');
+      tube.userData = { type: 'arc', arcData, clickable: true };
+      arcsGroup.add(tube);
+    }
+
     // Stars background
     const starPositions: number[] = [];
     for (let i = 0; i < 2000; i++) {
@@ -456,6 +536,8 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
       renderer.dispose();
     };
   }, [hotspots]);
+
+  return { cameraRef, rendererRef, globeRef, arcsGroupRef };
 }
 
 // ─── UI COMPONENTS ──────────────────────────────────────────────────────
@@ -572,6 +654,14 @@ export default function CyberWeatherGlobe() {
   const [clock, setClock] = useState(new Date());
   const [eps, setEps] = useState(0);
 
+  // Panel state
+  const [selectedArc, setSelectedArc] = useState<ArcData | null>(null);
+  const [arcPanelPos, setArcPanelPos] = useState({ x: 0, y: 0 });
+  const [selectedCell, setSelectedCell] = useState<HotspotCellData | null>(null);
+  const [cellPanelPos, setCellPanelPos] = useState({ x: 0, y: 0 });
+  const [isLiveMode, setIsLiveMode] = useState(true);
+  const [isLoadingCell, setIsLoadingCell] = useState(false);
+
   // Fetch threat data
   useEffect(() => {
     fetchThreatData().then(setData);
@@ -590,8 +680,79 @@ export default function CyberWeatherGlobe() {
     return () => clearInterval(id);
   }, []);
 
-  // Initialize globe
-  useGlobe(canvasRef, containerRef, data?.top_threats || []);
+  // Initialize globe — now returns refs for click detection
+  const { cameraRef, globeRef, arcsGroupRef } = useGlobe(canvasRef, containerRef, data?.top_threats || []);
+
+  // ─── CLICK HANDLER ────────────────────────────────────────────────────
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const handleClick = async (event: MouseEvent) => {
+      if (!cameraRef.current) return;
+
+      // Don't intercept clicks on overlay panels
+      const target = event.target as HTMLElement;
+      if (target.closest('.arc-detail-panel') || target.closest('.hotspot-cell-panel')) return;
+
+      const mouse = getMouseNDC(event, canvas as HTMLElement);
+
+      // 1. Try arc first (higher priority)
+      if (arcsGroupRef.current) {
+        const arcMeshes = arcsGroupRef.current.children.filter((c) => c.userData?.clickable);
+        const hit = raycastArcs(mouse, cameraRef.current, arcMeshes);
+        if (hit && hit.arc.userData.arcData) {
+          const pos = calculatePanelPosition(event.clientX, event.clientY, 600, 500);
+          setArcPanelPos(pos);
+          setSelectedArc(hit.arc.userData.arcData as ArcData);
+          setSelectedCell(null);
+          return;
+        }
+      }
+
+      // 2. Fall through to globe hotspot
+      if (globeRef.current) {
+        const hit = raycastGlobe(mouse, cameraRef.current, globeRef.current);
+        if (hit) {
+          const { cellId } = latLonToGridCell(hit.lat, hit.lon);
+          setIsLoadingCell(true);
+          try {
+            let cellData = await fetchCellHistory(cellId);
+            if (!cellData) {
+              // No backend data — generate plausible mock from real lat/lon
+              cellData = generateMockHotspotData({ cellId, lat: hit.lat, lon: hit.lon });
+            }
+            const pos = calculatePanelPosition(event.clientX, event.clientY, 360, 600);
+            setCellPanelPos(pos);
+            setSelectedCell(cellData);
+            setSelectedArc(null);
+          } catch {
+            const cellData = generateMockHotspotData({ cellId, lat: hit.lat, lon: hit.lon });
+            const pos = calculatePanelPosition(event.clientX, event.clientY, 360, 600);
+            setCellPanelPos(pos);
+            setSelectedCell(cellData);
+            setSelectedArc(null);
+          } finally {
+            setIsLoadingCell(false);
+          }
+        }
+      }
+    };
+
+    const clickWrapper = (e: Event) => handleClick(e as MouseEvent);
+    canvas.addEventListener('click', clickWrapper);
+    return () => canvas.removeEventListener('click', clickWrapper);
+  }, [cameraRef, globeRef, arcsGroupRef]);
+
+  // ─── KEYBOARD SHORTCUTS ───────────────────────────────────────────────
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setSelectedArc(null); setSelectedCell(null); }
+      if (e.key === 'l' || e.key === 'L') setIsLiveMode((v) => !v);
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, []);
 
   if (!data) return null;
 
@@ -857,6 +1018,60 @@ export default function CyberWeatherGlobe() {
           </div>
         </div>
       </div>
+
+      {/* ─── ARC DETAIL PANEL ─── */}
+      {selectedArc && (
+        <ArcDetailPanel
+          arc={selectedArc}
+          position={arcPanelPos}
+          onClose={() => setSelectedArc(null)}
+        />
+      )}
+
+      {/* ─── HOTSPOT CELL PANEL ─── */}
+      {selectedCell && (
+        <HotspotCellPanel
+          cell={selectedCell}
+          position={cellPanelPos}
+          onClose={() => setSelectedCell(null)}
+        />
+      )}
+
+      {/* ─── CELL DATA LOADING INDICATOR ─── */}
+      {isLoadingCell && (
+        <div
+          style={{
+            position: 'fixed',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            background: 'rgba(8,18,38,0.95)',
+            border: '1px solid rgba(0,180,255,0.3)',
+            color: '#00ccff',
+            padding: '18px 32px',
+            borderRadius: '8px',
+            zIndex: 9999,
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: '11px',
+            letterSpacing: '0.12em',
+          }}
+        >
+          ◈ LOADING CELL DATA…
+        </div>
+      )}
+
+      {/* ─── TEMPORAL REPLAY CONTROLS ─── */}
+      <TemporalReplayControls
+        onTimeChange={(ts) => {
+          setIsLiveMode(false);
+          console.log('[CyberWeather] Time scrub →', new Date(ts).toISOString());
+        }}
+        onPlaybackSpeedChange={(speed) => {
+          console.log('[CyberWeather] Playback speed →', speed);
+        }}
+        onLiveToggle={(live) => setIsLiveMode(live)}
+        isLive={isLiveMode}
+      />
 
       {/* Keyframes */}
       <style>{`

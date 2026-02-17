@@ -8,6 +8,7 @@
  * - Arc/Cell data builders
  */
 
+import type React from 'react';
 import * as THREE from 'three';
 import type { ArcData, HotspotCellData } from '../components/Panels';
 import { getMITRETechniques, getKillChainPhases } from './mitreMapping';
@@ -252,7 +253,7 @@ export function debounce<T extends (...args: any[]) => any>(
   func: T,
   wait: number
 ): (...args: Parameters<T>) => void {
-  let timeout: NodeJS.Timeout | null = null;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
 
   return (...args: Parameters<T>) => {
     if (timeout) clearTimeout(timeout);
