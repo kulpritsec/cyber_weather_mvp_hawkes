@@ -208,7 +208,7 @@ async function fetchThreatData(): Promise<ThreatData> {
         max_intensity: maxIntensity,
         max_branching_ratio: maxBr,
         active_cells: cells.length,
-        trend: Math.random() > 0.5 ? "increasing" : "stable", // TODO: calculate from historical data
+        trend: maxBr >= 0.5 ? "increasing" : avgIntensity > 50 ? "increasing" : "stable",
       });
     }
 
@@ -228,8 +228,8 @@ async function fetchThreatData(): Promise<ThreatData> {
     return {
       timestamp: new Date().toISOString(),
       global_threat_level: globalLevel,
-      total_events_24h: Math.floor(2400000 + Math.random() * 600000), // TODO: get from backend
-      events_per_second: Math.floor(28 + Math.random() * 15), // TODO: get from backend
+      total_events_24h: Math.floor(hotspots.reduce((s, h) => s + h.intensity, 0) * 24 * 3600),
+      events_per_second: Math.max(1, Math.round(hotspots.reduce((s, h) => s + h.intensity, 0))),
       vectors: vectorStats,
       top_threats: topThreats,
     };
@@ -1092,13 +1092,8 @@ export default function CyberWeatherGlobe() {
 
       {/* ─── TEMPORAL REPLAY CONTROLS ─── */}
       <TemporalReplayControls
-        onTimeChange={(ts) => {
-          setIsLiveMode(false);
-          console.log('[CyberWeather] Time scrub →', new Date(ts).toISOString());
-        }}
-        onPlaybackSpeedChange={(speed) => {
-          console.log('[CyberWeather] Playback speed →', speed);
-        }}
+        onTimeChange={() => setIsLiveMode(false)}
+        onPlaybackSpeedChange={() => {}}
         onLiveToggle={(live) => setIsLiveMode(live)}
         isLive={isLiveMode}
       />

@@ -117,7 +117,7 @@ interface LiveSeasonalData {
 
 // ─── MOCK DATA ─────────────────────────────────────────────────────────────
 
-const NOW = new Date('2026-02-16');
+const NOW = new Date();
 
 // § 2: Event Calendar
 interface CalendarEvent {
