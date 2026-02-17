@@ -35,7 +35,17 @@ app.add_middleware(
 )
 
 @app.get("/healthz")
-def healthz(): return {"ok": True}
+def healthz(): return {"status": "healthy", "ok": True}
+
+@app.get("/")
+def root():
+    return {
+        "service": "Cyber Weather Forecast API",
+        "version": "0.3.0",
+        "endpoints": ["/healthz", "/v1/data", "/v1/advisories", "/v1/summary",
+                      "/v1/vectors", "/v1/context/events", "/v1/context/seasonal",
+                      "/v1/context/campaigns", "/v1/context/forecast", "/v1/context/active"],
+    }
 
 # Include the unified router first (for the new /v1/data endpoint)
 app.include_router(unified_router)

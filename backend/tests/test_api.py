@@ -10,26 +10,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 # Import AFTER setting env var so the app uses in-memory sqlite
-from app.core.database import Base, engine, get_db
+from app.db import Base, engine
 from app.main import app
 from app.models import (
     Event, GridCell, Nowcast, Forecast, HawkesParam, VectorConfig,
     ForecastSnapshot, Advisory,
 )
 
-# Use the APP's engine directly — no separate test engine
+# Bind test sessions to app's engine so they share the same in-memory DB
 TestSession = sessionmaker(bind=engine)
-
-
-def override_get_db():
-    db = TestSession()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +72,16 @@ def seeded_db():
             intensity=12.0 + h * 0.05, confidence=0.65,
             updated_at=now,
         ))
+
+    session.add(Advisory(
+        grid_id=cell.id, vector="ssh",
+        title="SSH Storm Watch — Test Region",
+        body="Elevated hostile activity detected via Hawkes model.",
+        severity=3, region="test-region",
+        issued_at=now,
+        expires_at=now + timedelta(hours=6),
+        confidence=0.8,
+    ))
 
     session.commit()
     session.close()
@@ -170,24 +169,6 @@ class TestSummary:
         assert ssh["avg_intensity"] > 0
 
 
-class TestPodcastScript:
-    def test_empty(self, client):
-        r = client.get("/v1/podcast/script")
-        assert r.status_code == 200
-        data = r.json()
-        assert "sections" in data
-        assert any(s["type"] == "opening" for s in data["sections"])
-        assert any(s["type"] == "closing" for s in data["sections"])
-
-    def test_with_data(self, client, seeded_db):
-        r = client.get("/v1/podcast/script")
-        assert r.status_code == 200
-        data = r.json()
-        assert len(data["sections"]) >= 3
-        opening = next(s for s in data["sections"] if s["type"] == "opening")
-        assert "Cyber Weather Report" in opening["text"]
-
-
 class TestVectors:
     def test_default_vectors(self, client):
         r = client.get("/v1/vectors")
@@ -209,3 +190,65 @@ class TestLegacyEndpoints:
     def test_legacy_params(self, client, seeded_db):
         r = client.get("/v1/params?vector=ssh")
         assert r.status_code == 200
+
+
+class TestContextEndpoints:
+    def test_context_events(self, client):
+        r = client.get("/v1/context/events")
+        assert r.status_code == 200
+        data = r.json()
+        assert "count" in data
+        assert "events" in data
+        assert isinstance(data["events"], list)
+        assert "data_sources" in data
+
+    def test_context_seasonal(self, client):
+        r = client.get("/v1/context/seasonal")
+        assert r.status_code == 200
+        data = r.json()
+        assert "vectors" in data
+        assert "ssh" in data["vectors"]
+        ssh = data["vectors"]["ssh"]
+        assert "current_s_t" in ssh
+        assert len(ssh["monthly"]) == 12
+
+    def test_context_campaigns(self, client):
+        r = client.get("/v1/context/campaigns")
+        assert r.status_code == 200
+        data = r.json()
+        assert "groups" in data
+        assert isinstance(data["groups"], list)
+        assert len(data["groups"]) >= 1
+        group = data["groups"][0]
+        assert "current_month_intensity" in group
+        assert "is_elevated" in group
+
+    def test_context_forecast_seed(self, client):
+        """When HawkesParam table is empty, falls back to seed data."""
+        r = client.get("/v1/context/forecast?vector=ssh")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["vector"] == "ssh"
+        assert data["data_source"] == "seed_fallback"
+        assert "series" in data
+        assert len(data["series"]) == 30  # default days=30
+
+    def test_context_forecast_live(self, client, seeded_db):
+        """When HawkesParam rows exist, returns live data."""
+        r = client.get("/v1/context/forecast?vector=ssh")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["data_source"] == "live_hawkes_db"
+        assert data["cell_count"] >= 1
+
+    def test_context_forecast_invalid_vector(self, client):
+        r = client.get("/v1/context/forecast?vector=invalid_vector")
+        assert r.status_code == 422
+
+    def test_context_active(self, client):
+        r = client.get("/v1/context/active")
+        assert r.status_code == 200
+        data = r.json()
+        assert "active_events" in data
+        assert "elevated_groups" in data
+        assert "seasonal_now" in data

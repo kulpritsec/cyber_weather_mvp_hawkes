@@ -21,7 +21,7 @@ from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from ..core.database import SessionLocal
+from ..db import SessionLocal
 from ..core.config import get_settings
 from ..models import Event, HawkesParam, Advisory, ForecastSnapshot, VectorConfig
 from ..ingest import dshield, greynoise, abusech

@@ -16,7 +16,6 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from ..models import Event, GridCell
-from ..core.database import get_db
 from .geolocation import geolocate
 
 logger = logging.getLogger(__name__)

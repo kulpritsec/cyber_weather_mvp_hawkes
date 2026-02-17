@@ -132,6 +132,52 @@ def get_pipeline_status():
     from ..services.pipeline import get_pipeline_status
     return get_pipeline_status()
 
+@router.get("/summary")
+def get_summary(db: Session = Depends(get_db)):
+    """Global threat summary across all active vectors."""
+    from ..models import VectorConfig, VECTOR_SEED
+
+    vector_names = [r.name for r in db.query(VectorConfig).filter(VectorConfig.is_active == True).all()]
+    if not vector_names:
+        vector_names = [v["name"] for v in VECTOR_SEED]
+
+    vectors_out = []
+    total_intensity = 0.0
+    for vname in vector_names:
+        rows = db.query(Nowcast).filter(Nowcast.vector == vname).all()
+        if not rows:
+            continue
+        avg = sum(r.intensity for r in rows) / len(rows)
+        total_intensity += avg
+        vectors_out.append({"vector": vname, "avg_intensity": round(avg, 2), "cell_count": len(rows)})
+
+    level = "low"
+    if total_intensity > 200:
+        level = "critical"
+    elif total_intensity > 100:
+        level = "high"
+    elif total_intensity > 40:
+        level = "moderate"
+    elif total_intensity > 10:
+        level = "elevated"
+
+    return {
+        "global_threat_level": level,
+        "active_vector_count": len(vectors_out),
+        "vectors": vectors_out,
+    }
+
+
+@router.get("/vectors")
+def get_vectors(db: Session = Depends(get_db)):
+    """List active threat vectors from VectorConfig; falls back to seed data."""
+    from ..models import VectorConfig, VECTOR_SEED
+    rows = db.query(VectorConfig).filter(VectorConfig.is_active == True).order_by(VectorConfig.sort_order).all()
+    if rows:
+        return [{"name": r.name, "display_name": r.display_name, "color_hex": r.color_hex} for r in rows]
+    return [{"name": v["name"], "display_name": v["display_name"], "color_hex": v["color_hex"]} for v in VECTOR_SEED]
+
+
 @router.get("/events/stream")
 async def stream_events(request: Request, db: Session = Depends(get_db)):
     """
