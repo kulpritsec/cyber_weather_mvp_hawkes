@@ -42,3 +42,6 @@ htmlcov/
 
 # Build artifacts
 frontend/dist/
+
+# Claude Code
+.claude/

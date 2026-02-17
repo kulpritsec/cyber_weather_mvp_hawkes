@@ -30,7 +30,7 @@ services:
         condition: service_healthy
     command: >
       sh -c "
-        python -c 'from app.core.database import Base, engine; Base.metadata.create_all(bind=engine)' &&
+        python -c 'from app.db import Base, engine; Base.metadata.create_all(bind=engine)' &&
         uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
       "
 
@@ -44,14 +44,12 @@ services:
         condition: service_healthy
     command: >
       sh -c "
-        echo 'Initializing data pipeline...' &&
+        echo 'Seeding data...' &&
+        python -c 'from app.db import Base, engine; Base.metadata.create_all(bind=engine)' &&
         python -m app.ingest.generate_synthetic --hours 24 --rate 1200 &&
-        python -m app.services.aggregator --recalc &&
-        python -m app.services.hawkes_fit --hours 24 &&
-        echo 'Pipeline complete. Sleeping...' &&
-        sleep infinity
+        echo 'Seed complete.'
       "
-    # In production, replace 'sleep infinity' with a scheduler (cron / APScheduler)
+    restart: "no"
 
   frontend:
     build: ./frontend

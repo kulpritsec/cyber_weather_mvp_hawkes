@@ -103,23 +103,34 @@ def _get_params_data(vector: str, res: float, db: Session) -> FeatureCollection:
 
 @router.get("/advisories", response_model=list[AdvisoryOut])
 def get_advisories(vector: str = Query("ssh"), db: Session = Depends(get_db)):
-    """Get security advisories based on current threat levels"""
+    """Get security advisories — real rows first, synthetic fallback when table empty."""
     now = datetime.now(timezone.utc)
+    real = db.query(Advisory).filter(
+        Advisory.vector == vector, Advisory.expires_at > now
+    ).order_by(Advisory.severity.desc()).limit(10).all()
+    if real:
+        return [
+            AdvisoryOut(
+                id=a.id, vector=a.vector, title=a.title, body=a.body, details=a.details,
+                severity=a.severity, region=a.region or str(a.grid_id),
+                issued_at=a.issued_at.isoformat() if a.issued_at else None,
+                expires_at=a.expires_at.isoformat() if a.expires_at else None,
+                start_time=a.start_time.isoformat() if a.start_time else None,
+                end_time=a.end_time.isoformat() if a.end_time else None,
+                confidence=a.confidence, grid_id=a.grid_id,
+            ) for a in real
+        ]
     q = db.query(Nowcast).filter(Nowcast.vector == vector).order_by(Nowcast.intensity.desc()).limit(5).all()
-    
-    advisories = []
-    for i, nc in enumerate(q, start=1):
-        advisories.append(AdvisoryOut(
-            id=i, vector=vector, 
-            title=f"{vector.upper()} Storm Watch — Cell {nc.grid_id}",
-            details=f"Elevated hostile activity (intensity={nc.intensity:.1f}, conf={nc.confidence:.2f}). Consider step-up auth, reduced token TTL, and micro-segmentation.",
-            severity="watch" if i > 2 else "warning", 
-            region=str(nc.grid_id),
-            start_time=now.isoformat(), 
-            end_time=(now + timedelta(hours=6)).isoformat(), 
-            confidence=nc.confidence
-        ))
-    return advisories
+    return [
+        AdvisoryOut(
+            id=i, vector=vector, title=f"{vector.upper()} Storm Watch — Cell {nc.grid_id}",
+            body=f"Elevated hostile activity (intensity={nc.intensity:.1f}, conf={nc.confidence:.2f}).",
+            severity=4 if i <= 2 else 3, region=str(nc.grid_id),
+            issued_at=now.isoformat(), expires_at=(now + timedelta(hours=6)).isoformat(),
+            start_time=now.isoformat(), end_time=(now + timedelta(hours=6)).isoformat(),
+            confidence=nc.confidence, grid_id=nc.grid_id,
+        ) for i, nc in enumerate(q, start=1)
+    ]
 
 @router.get("/health")
 def health_check():
