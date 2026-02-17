@@ -7,7 +7,7 @@
  * Architecture: Predictive_Context_Engine_Architecture.docx (Feb 2026)
  */
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 
 // ─── DESIGN TOKENS ────────────────────────────────────────────────────────
 const C = {
@@ -39,6 +39,81 @@ const VECTOR_COLORS: Record<string, string> = {
   botnet_c2:  '#ffd740',
   ransomware: '#ff1744',
 };
+
+// ─── SOURCE ATTRIBUTION ────────────────────────────────────────────────────
+
+const SOURCE_COLORS: Record<string, string> = {
+  'DShield':         '#00ccff',
+  'GreyNoise':       '#a855f7',
+  'Abuse.ch':        '#f97316',
+  'HawkesParam DB':  '#22c55e',
+  'MITRE ATT&CK':    '#ef4444',
+  'STL Decomp':      '#eab308',
+  'Architecture Doc':'#5a7da8',
+  'Historical Data': '#64748b',
+};
+
+function DataSourceChips({ sources, label }: { sources: string[]; label?: string }) {
+  if (!sources.length) return null;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap', marginTop: '6px' }}>
+      {label && (
+        <span style={{ fontFamily: C.mono, fontSize: '8px', color: C.muted, letterSpacing: '0.08em' }}>
+          {label}:
+        </span>
+      )}
+      {sources.map(s => (
+        <span key={s} style={{
+          padding: '1px 7px', borderRadius: '10px',
+          background: `${SOURCE_COLORS[s] ?? '#5a7da8'}12`,
+          border: `1px solid ${SOURCE_COLORS[s] ?? '#5a7da8'}30`,
+          color: SOURCE_COLORS[s] ?? C.muted,
+          fontFamily: C.mono, fontSize: '8px', letterSpacing: '0.06em',
+        }}>
+          ◈ {s}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ─── LIVE DATA INTERFACES ──────────────────────────────────────────────────
+
+interface LiveEvent extends CalendarEvent {
+  source?: string;
+  source_url?: string;
+  data_sources?: string[];
+}
+
+interface ForecastPoint {
+  date: string;
+  mu_base: number;
+  s_t: number;
+  event_mult: number;
+  campaign_mult: number;
+  mu_t: number;
+}
+
+interface LiveForecastData {
+  vector: string;
+  mu_base: number;
+  is_live: boolean;
+  data_sources: string[];
+  series: ForecastPoint[];
+  seasonal_now: number;
+  campaign_now: number;
+  event_now: number;
+}
+
+interface LiveCampaignGroup extends CampaignGroup {
+  mitre_id?: string;
+  source_url?: string;
+}
+
+interface LiveSeasonalData {
+  vectors: Record<string, { monthly: number[]; current_s_t: number; data_sources: string[] }>;
+  data_sources: string[];
+}
 
 // ─── MOCK DATA ─────────────────────────────────────────────────────────────
 
@@ -299,19 +374,26 @@ function heatColor(mult: number): string {
 
 // ─── SUB-COMPONENTS ───────────────────────────────────────────────────────
 
-function EventCalendarTab() {
+function EventCalendarTab({ events, dataSources }: { events?: LiveEvent[]; dataSources?: string[] }) {
   const [filter, setFilter] = useState<string>('all');
   const categories = ['all', 'sporting', 'commerce', 'geopolitical', 'vulnerability', 'financial', 'holiday'];
+  const source = events && events.length > 0 ? events : EVENTS as LiveEvent[];
 
   const filtered = useMemo(() => {
-    const evs = filter === 'all' ? EVENTS : EVENTS.filter(e => e.category === filter);
+    const evs = filter === 'all' ? source : source.filter(e => e.category === filter);
     return [...evs].sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime());
-  }, [filter]);
+  }, [filter, source]);
 
   return (
     <div>
+      {/* Panel-level data source attribution */}
+      <DataSourceChips
+        sources={dataSources ?? ['Architecture Doc', 'Historical Data']}
+        label="DATA SOURCES"
+      />
+
       {/* Filter chips */}
-      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '16px' }}>
+      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '16px', marginTop: '12px' }}>
         {categories.map(cat => (
           <button
             key={cat}
@@ -432,6 +514,11 @@ function EventCalendarTab() {
               <div style={{ fontFamily: C.mono, fontSize: '10px', color: C.muted, lineHeight: 1.5 }}>
                 {ev.description}
               </div>
+
+              {/* Per-event data source chips */}
+              {(ev as LiveEvent).data_sources && (
+                <DataSourceChips sources={(ev as LiveEvent).data_sources!} label="SRC" />
+              )}
             </div>
           );
         })}
@@ -440,13 +527,23 @@ function EventCalendarTab() {
   );
 }
 
-function SeasonalHeatmapTab() {
+function SeasonalHeatmapTab({ liveData }: { liveData?: LiveSeasonalData }) {
   const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const currentMonth = NOW.getMonth(); // 0-indexed
 
+  // Use live monthly values if available, else fall back to seed constants
+  const displayData: Record<string, number[]> = liveData
+    ? Object.fromEntries(
+        Object.entries(liveData.vectors).map(([v, info]) => [v, info.monthly])
+      )
+    : SEASONAL_DATA;
+
+  const topSources = liveData?.data_sources ?? ['STL Decomp', 'Architecture Doc'];
+
   return (
     <div>
-      <div style={{ fontFamily: C.mono, fontSize: '10px', color: C.muted, marginBottom: '16px', lineHeight: 1.6 }}>
+      <DataSourceChips sources={topSources} label="DATA SOURCES" />
+      <div style={{ fontFamily: C.mono, fontSize: '10px', color: C.muted, marginBottom: '16px', marginTop: '10px', lineHeight: 1.6 }}>
         STL seasonal decomposition — multiplicative factor S(t) per vector per month.
         Values &gt;1.0 indicate above-baseline background rate. Current month highlighted.
       </div>
@@ -472,7 +569,7 @@ function SeasonalHeatmapTab() {
         </div>
 
         {/* Rows */}
-        {Object.entries(SEASONAL_DATA).map(([vector, mults]) => (
+        {Object.entries(displayData).map(([vector, mults]) => (
           <div key={vector} style={{ display: 'grid', gridTemplateColumns: '80px repeat(12, 1fr)', gap: '2px', marginBottom: '2px' }}>
             <div style={{
               fontFamily: C.mono, fontSize: '10px',
@@ -544,18 +641,23 @@ function SeasonalHeatmapTab() {
   );
 }
 
-function CampaignRecurrenceTab() {
+function CampaignRecurrenceTab({ groups, dataSources }: { groups?: LiveCampaignGroup[]; dataSources?: string[] }) {
   const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const currentMonth = NOW.getMonth(); // 0-indexed
+  const source = groups && groups.length > 0 ? groups : CAMPAIGN_GROUPS as LiveCampaignGroup[];
 
   // Sort by intensity at current month (most active first)
-  const sorted = [...CAMPAIGN_GROUPS].sort(
+  const sorted = [...source].sort(
     (a, b) => b.monthlyIntensity[currentMonth] - a.monthlyIntensity[currentMonth]
   );
 
   return (
     <div>
-      <div style={{ fontFamily: C.mono, fontSize: '10px', color: C.muted, marginBottom: '16px', lineHeight: 1.6 }}>
+      <DataSourceChips
+        sources={dataSources ?? ['MITRE ATT&CK', 'Historical Data', 'Architecture Doc']}
+        label="DATA SOURCES"
+      />
+      <div style={{ fontFamily: C.mono, fontSize: '10px', color: C.muted, marginBottom: '16px', marginTop: '10px', lineHeight: 1.6 }}>
         Von Mises circular KDE over attributed campaign timestamps. C(t) = weighted average across groups,
         normalized so mean = 1.0. Groups ranked by activity at current month ({MONTHS[currentMonth]}).
       </div>
@@ -596,10 +698,21 @@ function CampaignRecurrenceTab() {
           }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
               <div>
-                <span style={{ fontFamily: C.mono, fontSize: '11px', fontWeight: 600, color: C.text }}>
-                  {g.name}
-                </span>
-                <span style={{ fontFamily: C.mono, fontSize: '9px', color: C.muted, marginLeft: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontFamily: C.mono, fontSize: '11px', fontWeight: 600, color: C.text }}>
+                    {g.name}
+                  </span>
+                  {(g as LiveCampaignGroup).mitre_id && (
+                    <span style={{
+                      padding: '1px 6px', borderRadius: '8px',
+                      background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
+                      color: '#ef4444', fontFamily: C.mono, fontSize: '8px', letterSpacing: '0.05em',
+                    }}>
+                      ◈ MITRE {(g as LiveCampaignGroup).mitre_id}
+                    </span>
+                  )}
+                </div>
+                <span style={{ fontFamily: C.mono, fontSize: '9px', color: C.muted }}>
                   {g.origin} · {g.campaigns} campaigns · conf {(g.confidence * 100).toFixed(0)}%
                 </span>
               </div>
@@ -655,15 +768,18 @@ function CampaignRecurrenceTab() {
   );
 }
 
-function ForecastTab() {
+function ForecastTab({ liveData }: { liveData?: LiveForecastData }) {
   const DAYS = 30;
   const labels = Array.from({ length: DAYS }, (_, i) => {
     const d = new Date(NOW.getTime() + i * 86400000);
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   });
 
-  // Generate synthetic covariate-enhanced forecast for SSH
-  const muBase = 0.22;
+  const isLive = liveData?.is_live ?? false;
+  const liveSources = liveData?.data_sources ?? ['Architecture Doc'];
+
+  // Use real μ_base from DB if available, else seed value
+  const muBase = liveData?.mu_base ?? 0.22;
   const forecast = Array.from({ length: DAYS }, (_, i) => {
     const d = new Date(NOW.getTime() + i * 86400000);
     const month = d.getMonth();
@@ -715,14 +831,30 @@ function ForecastTab() {
 
   return (
     <div>
+      {/* Live / Seed data badge + source attribution */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
+        <span style={{
+          padding: '2px 10px', borderRadius: '10px',
+          background: isLive ? 'rgba(34,197,94,0.12)' : 'rgba(90,125,168,0.12)',
+          border: `1px solid ${isLive ? 'rgba(34,197,94,0.4)' : 'rgba(90,125,168,0.3)'}`,
+          color: isLive ? '#22c55e' : '#5a7da8',
+          fontFamily: C.mono, fontSize: '9px', letterSpacing: '0.1em',
+          fontWeight: 700,
+        }}>
+          {isLive ? '◉ LIVE — HawkesParam DB' : '◎ SEED DATA'}
+        </span>
+        <DataSourceChips sources={liveSources} />
+      </div>
+
       <div style={{ fontFamily: C.mono, fontSize: '10px', color: C.muted, marginBottom: '12px', lineHeight: 1.6 }}>
         30-day covariate-enhanced forecast for SSH — μ(t) = μ_base × S(t) × ∏(1 + wᵢEᵢ(t)) × C(t)
+        {isLive && <span style={{ color: '#22c55e' }}> · μ_base sourced from live CTI ingest</span>}
       </div>
 
       {/* Summary stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px', marginBottom: '16px' }}>
         {[
-          { label: 'BASE RATE μ', value: muBase.toFixed(3), sub: 'events/hr', color: '#5a7da8' },
+          { label: 'BASE RATE μ', value: muBase.toFixed(3), sub: isLive ? 'live avg (DB)' : 'events/hr', color: isLive ? '#22c55e' : '#5a7da8' },
           { label: 'SEASONAL S(t)', value: SEASONAL_DATA['ssh'][NOW.getMonth()].toFixed(3), sub: 'Feb multiplier', color: '#22c55e' },
           { label: 'AVG UPLIFT', value: `+${avgUplift}%`, sub: '30-day mean', color: '#6366f1' },
           { label: 'CAMPAIGN C(t)', value: CAMPAIGN_GROUPS[0].monthlyIntensity[NOW.getMonth()].toFixed(2), sub: 'APT28 (Feb)', color: '#f97316' },
@@ -885,12 +1017,14 @@ function BacktestTab() {
 // ─── MAIN PANEL ───────────────────────────────────────────────────────────
 
 const TABS = [
-  { id: 'events',    label: '◈ EVENTS',    component: EventCalendarTab },
-  { id: 'seasonal',  label: '◊ SEASONAL',  component: SeasonalHeatmapTab },
-  { id: 'campaigns', label: '◉ CAMPAIGNS', component: CampaignRecurrenceTab },
-  { id: 'forecast',  label: '▲ FORECAST',  component: ForecastTab },
-  { id: 'backtest',  label: '▣ BACKTEST',  component: BacktestTab },
+  { id: 'events',    label: '◈ EVENTS' },
+  { id: 'seasonal',  label: '◊ SEASONAL' },
+  { id: 'campaigns', label: '◉ CAMPAIGNS' },
+  { id: 'forecast',  label: '▲ FORECAST' },
+  { id: 'backtest',  label: '▣ BACKTEST' },
 ];
+
+const API = import.meta.env.VITE_API_URL ?? '';
 
 interface PredictiveContextPanelProps {
   onClose: () => void;
@@ -899,10 +1033,75 @@ interface PredictiveContextPanelProps {
 export function PredictiveContextPanel({ onClose }: PredictiveContextPanelProps) {
   const [activeTab, setActiveTab] = useState('events');
 
-  const ActiveComp = TABS.find(t => t.id === activeTab)?.component ?? EventCalendarTab;
+  // ── Live data state ──────────────────────────────────────────────────────
+  const [liveEvents,   setLiveEvents]   = useState<LiveEvent[] | undefined>(undefined);
+  const [liveSeasonal, setLiveSeasonal] = useState<LiveSeasonalData | undefined>(undefined);
+  const [liveCampaigns,setLiveCampaigns]= useState<{ groups: LiveCampaignGroup[]; data_sources: string[] } | undefined>(undefined);
+  const [liveForecast, setLiveForecast] = useState<LiveForecastData | undefined>(undefined);
+  const [eventSources, setEventSources] = useState<string[]>([]);
+  const [fetchError,   setFetchError]   = useState<string | null>(null);
 
-  // Count currently active events for badge
-  const activeEventCount = EVENTS.filter(isEventActive).length;
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchAll() {
+      try {
+        const [evRes, seaRes, camRes, fcRes] = await Promise.allSettled([
+          fetch(`${API}/api/v1/context/events`),
+          fetch(`${API}/api/v1/context/seasonal`),
+          fetch(`${API}/api/v1/context/campaigns`),
+          fetch(`${API}/api/v1/context/forecast?vector=ssh`),
+        ]);
+
+        if (cancelled) return;
+
+        if (evRes.status === 'fulfilled' && evRes.value.ok) {
+          const data = await evRes.value.json();
+          setLiveEvents(data.events ?? []);
+          setEventSources(data.data_sources ?? []);
+        }
+        if (seaRes.status === 'fulfilled' && seaRes.value.ok) {
+          const data = await seaRes.value.json();
+          setLiveSeasonal(data);
+        }
+        if (camRes.status === 'fulfilled' && camRes.value.ok) {
+          const data = await camRes.value.json();
+          setLiveCampaigns({ groups: data.groups ?? [], data_sources: data.data_sources ?? [] });
+        }
+        if (fcRes.status === 'fulfilled' && fcRes.value.ok) {
+          const data = await fcRes.value.json();
+          setLiveForecast(data);
+        }
+      } catch (e) {
+        if (!cancelled) setFetchError('Backend unreachable — showing seed data');
+      }
+    }
+
+    fetchAll();
+    // Refresh every 5 min
+    const interval = setInterval(fetchAll, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  // Count currently active events for badge (live data preferred)
+  const activeEventCount = (liveEvents ?? EVENTS as LiveEvent[]).filter(isEventActive).length;
+
+  function renderTab() {
+    switch (activeTab) {
+      case 'events':
+        return <EventCalendarTab events={liveEvents} dataSources={eventSources.length ? eventSources : undefined} />;
+      case 'seasonal':
+        return <SeasonalHeatmapTab liveData={liveSeasonal} />;
+      case 'campaigns':
+        return <CampaignRecurrenceTab groups={liveCampaigns?.groups} dataSources={liveCampaigns?.data_sources} />;
+      case 'forecast':
+        return <ForecastTab liveData={liveForecast} />;
+      case 'backtest':
+        return <BacktestTab />;
+      default:
+        return <EventCalendarTab />;
+    }
+  }
 
   return (
     <div
@@ -949,6 +1148,24 @@ export function PredictiveContextPanel({ onClose }: PredictiveContextPanelProps)
                 color: '#22c55e', fontFamily: C.mono, fontSize: '9px',
               }}>
                 {activeEventCount} ACTIVE
+              </span>
+            )}
+            {liveForecast?.is_live && (
+              <span style={{
+                padding: '2px 8px', borderRadius: '10px',
+                background: 'rgba(0,204,255,0.08)', border: '1px solid rgba(0,204,255,0.25)',
+                color: C.accent, fontFamily: C.mono, fontSize: '8px', letterSpacing: '0.08em',
+              }}>
+                ◉ CTI LIVE
+              </span>
+            )}
+            {fetchError && (
+              <span style={{
+                padding: '2px 8px', borderRadius: '10px',
+                background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)',
+                color: '#ef4444', fontFamily: C.mono, fontSize: '8px',
+              }}>
+                ⚠ {fetchError}
               </span>
             )}
           </div>
@@ -1000,7 +1217,7 @@ export function PredictiveContextPanel({ onClose }: PredictiveContextPanelProps)
 
       {/* ── Content ── */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '18px', scrollbarWidth: 'thin' }}>
-        <ActiveComp />
+        {renderTab()}
       </div>
     </div>
   );

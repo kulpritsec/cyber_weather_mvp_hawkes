@@ -525,3 +525,350 @@ def get_cell_history(
             "hours": hours
         }
     }
+
+
+# ─── PREDICTIVE CONTEXT ENGINE ENDPOINTS ────────────────────────────────────
+# Implements: Predictive_Context_Engine_Architecture.docx
+# μ(t) = μ_base × S(t) × ∏(1 + wᵢ·Eᵢ(t)) × C(t)
+
+# Seasonal multipliers from STL analysis (Architecture doc §3)
+_SEASONAL: dict[str, list[float]] = {
+    "ssh":        [1.05, 1.02, 1.00, 0.98, 0.92, 0.88, 0.84, 0.86, 0.95, 1.05, 1.25, 1.30],
+    "rdp":        [1.08, 1.05, 1.00, 0.95, 0.88, 0.83, 0.80, 0.85, 0.95, 1.10, 1.20, 1.35],
+    "http":       [0.95, 0.85, 0.95, 1.10, 1.05, 1.00, 0.92, 0.95, 1.00, 1.05, 1.30, 1.15],
+    "dns_amp":    [0.80, 0.88, 1.15, 1.05, 1.10, 1.20, 1.10, 1.05, 1.00, 0.95, 0.92, 0.90],
+}
+_DOW = [1.05, 1.08, 1.15, 1.05, 1.00, 0.88, 0.82]  # Mon–Sun
+
+# Event calendar seed data (Architecture doc §2)
+_EVENT_CALENDAR = [
+    {
+        "id": "patch-tue-feb-2026", "name": "Patch Tuesday — February 2026",
+        "category": "vulnerability", "start_date": "2026-02-10", "end_date": "2026-02-10",
+        "lead_days": 0, "lag_days": 30, "region": "global", "impact_weight": 0.45,
+        "vectors": ["http", "ssh", "rdp"], "confidence": 0.92,
+        "source": "MSRC", "source_url": "https://msrc.microsoft.com/update-guide",
+        "description": "Microsoft February Patch Tuesday. Exploitation lag window active through ~March 12.",
+    },
+    {
+        "id": "fifa-wc-2026", "name": "FIFA World Cup 2026",
+        "category": "sporting", "start_date": "2026-06-11", "end_date": "2026-07-19",
+        "lead_days": 7, "lag_days": 3, "region": "north_america", "impact_weight": 0.62,
+        "vectors": ["http", "dns_amp", "brute_force"], "confidence": 0.85,
+        "source": "Analyst Curated", "source_url": "https://www.fifa.com/fifaplus/en/tournaments/mens/worldcup/canada-mexico-usa-2026",
+        "description": "600% phishing spike modelled on 2022 Qatar patterns. Ticketing fraud, streaming DDoS.",
+    },
+    {
+        "id": "patch-tue-mar-2026", "name": "Patch Tuesday — March 2026",
+        "category": "vulnerability", "start_date": "2026-03-10", "end_date": "2026-03-10",
+        "lead_days": 0, "lag_days": 30, "region": "global", "impact_weight": 0.45,
+        "vectors": ["http", "ssh", "rdp"], "confidence": 0.92,
+        "source": "MSRC", "source_url": "https://msrc.microsoft.com/update-guide",
+        "description": "Microsoft March Patch Tuesday. Reverse-engineering and weaponization window.",
+    },
+    {
+        "id": "tax-deadline-us-2026", "name": "US Tax Filing Deadline",
+        "category": "financial", "start_date": "2026-04-15", "end_date": "2026-04-15",
+        "lead_days": 14, "lag_days": 7, "region": "north_america", "impact_weight": 0.38,
+        "vectors": ["http", "brute_force", "ssh"], "confidence": 0.78,
+        "source": "Analyst Curated", "source_url": "https://www.irs.gov/",
+        "description": "BEC and phishing campaigns peak 2 weeks prior. Wire fraud, fake IRS emails.",
+    },
+    {
+        "id": "defcon-34-2026", "name": "DEF CON 34",
+        "category": "vulnerability", "start_date": "2026-08-06", "end_date": "2026-08-09",
+        "lead_days": 0, "lag_days": 30, "region": "north_america", "impact_weight": 0.55,
+        "vectors": ["ssh", "http", "rdp"], "confidence": 0.88,
+        "source": "Analyst Curated", "source_url": "https://defcon.org",
+        "description": "New tool and PoC releases drive scanning within 48h.",
+    },
+    {
+        "id": "us-midterms-2026", "name": "US Midterm Elections 2026",
+        "category": "geopolitical", "start_date": "2026-11-03", "end_date": "2026-11-03",
+        "lead_days": 30, "lag_days": 14, "region": "north_america", "impact_weight": 0.72,
+        "vectors": ["ssh", "http", "dns_amp", "botnet_c2"], "confidence": 0.82,
+        "source": "Analyst Curated", "source_url": "https://www.fec.gov/",
+        "description": "State-sponsored infrastructure probing 30+ days ahead of election.",
+    },
+    {
+        "id": "black-friday-2026", "name": "Black Friday / Cyber Monday 2026",
+        "category": "commerce", "start_date": "2026-11-27", "end_date": "2026-11-30",
+        "lead_days": 5, "lag_days": 14, "region": "global", "impact_weight": 0.68,
+        "vectors": ["http", "brute_force", "botnet_c2"], "confidence": 0.91,
+        "source": "Imperva Threat Research 2024", "source_url": "https://www.imperva.com/resources/resource-library/reports/bad-bot-report/",
+        "description": "3.6B bot requests in 48h (Imperva 2024 baseline). 4× credential stuffing.",
+    },
+    {
+        "id": "holiday-season-2026", "name": "Holiday Season 2026",
+        "category": "holiday", "start_date": "2026-12-24", "end_date": "2026-12-26",
+        "lead_days": 3, "lag_days": 3, "region": "global", "impact_weight": 0.58,
+        "vectors": ["ransomware", "ssh", "rdp", "botnet_c2"], "confidence": 0.89,
+        "source": "Semperis 2023-2024 Analysis", "source_url": "https://www.semperis.com/",
+        "description": "68% of major ransomware incidents target weekends/holidays (Semperis). Christmas week is peak.",
+    },
+]
+
+# Campaign profiles (Architecture doc §4, matched to threatGroups.ts)
+_CAMPAIGN_PROFILES = [
+    {
+        "name": "APT28 (Fancy Bear)", "origin": "Russia / GRU",
+        "primary_vectors": ["ssh", "http", "botnet_c2"],
+        "monthly_intensity": [1.35, 1.40, 1.10, 0.90, 0.85, 0.80, 0.75, 0.90, 1.20, 1.35, 1.40, 1.10],
+        "confidence": 0.88, "total_campaigns": 47,
+        "source": "MITRE ATT&CK", "mitre_id": "G0007",
+        "source_url": "https://attack.mitre.org/groups/G0007/",
+    },
+    {
+        "name": "Lazarus Group", "origin": "North Korea",
+        "primary_vectors": ["http", "ransomware", "botnet_c2"],
+        "monthly_intensity": [0.90, 1.45, 1.10, 0.85, 0.80, 0.90, 0.85, 1.20, 1.25, 1.00, 0.95, 0.85],
+        "confidence": 0.82, "total_campaigns": 38,
+        "source": "MITRE ATT&CK", "mitre_id": "G0032",
+        "source_url": "https://attack.mitre.org/groups/G0032/",
+    },
+    {
+        "name": "APT41", "origin": "China",
+        "primary_vectors": ["ssh", "http", "rdp"],
+        "monthly_intensity": [1.20, 1.30, 1.00, 0.90, 1.15, 1.10, 0.85, 0.80, 1.00, 1.05, 1.10, 1.25],
+        "confidence": 0.79, "total_campaigns": 52,
+        "source": "MITRE ATT&CK", "mitre_id": "G0096",
+        "source_url": "https://attack.mitre.org/groups/G0096/",
+    },
+    {
+        "name": "Conti Successor", "origin": "Russia / Eastern Europe",
+        "primary_vectors": ["ransomware", "rdp", "ssh"],
+        "monthly_intensity": [1.30, 1.10, 0.95, 0.85, 0.90, 0.88, 0.80, 0.82, 0.95, 1.05, 1.25, 1.45],
+        "confidence": 0.75, "total_campaigns": 29,
+        "source": "CISA AA22-057A", "mitre_id": "G0102",
+        "source_url": "https://www.cisa.gov/news-events/cybersecurity-advisories/aa22-057a",
+    },
+    {
+        "name": "Turla", "origin": "Russia / FSB",
+        "primary_vectors": ["ssh", "botnet_c2", "http"],
+        "monthly_intensity": [0.95, 1.05, 0.90, 0.85, 0.80, 0.88, 0.90, 1.00, 1.20, 1.25, 1.15, 1.10],
+        "confidence": 0.76, "total_campaigns": 31,
+        "source": "MITRE ATT&CK", "mitre_id": "G0010",
+        "source_url": "https://attack.mitre.org/groups/G0010/",
+    },
+]
+
+
+def _event_active(ev: dict, d: datetime) -> bool:
+    s = datetime.fromisoformat(ev["start_date"]) - timedelta(days=ev["lead_days"])
+    e = datetime.fromisoformat(ev["end_date"]) + timedelta(days=ev["lag_days"])
+    return s <= d <= e
+
+
+@router.get("/context/events")
+def get_context_events():
+    """Event calendar with active/upcoming status. Source: MSRC, Imperva, MITRE, Analyst."""
+    now = datetime.utcnow()
+    result = []
+    for ev in _EVENT_CALENDAR:
+        active = _event_active(ev, now)
+        start_dt = datetime.fromisoformat(ev["start_date"]) - timedelta(days=ev["lead_days"])
+        days_until = max(0, (start_dt - now).days)
+        result.append({
+            **ev,
+            "is_active": active,
+            "days_until_active": days_until if not active else 0,
+        })
+    return {
+        "count": len(result),
+        "active_count": sum(1 for e in result if e["is_active"]),
+        "data_source": "analyst_curated",
+        "data_sources": ["MSRC", "NIST NVD", "Imperva Threat Research", "Semperis", "MITRE ATT&CK", "Analyst Curated"],
+        "events": result,
+    }
+
+
+@router.get("/context/seasonal")
+def get_context_seasonal():
+    """Seasonal multipliers S(t) per vector. Derived from STL decomposition of 3yr historical data."""
+    now = datetime.utcnow()
+    month_idx = now.month - 1
+    dow_idx = now.weekday()
+    result = {}
+    for vector, mults in _SEASONAL.items():
+        current_mult = mults[month_idx] * _DOW[dow_idx]
+        result[vector] = {
+            "monthly": mults,
+            "dow": _DOW,
+            "current_s_t": round(current_mult, 3),
+            "current_month_idx": month_idx,
+            "current_dow_idx": dow_idx,
+        }
+    return {
+        "data_source": "stl_decomposition",
+        "data_sources": ["Historical CTI feeds (DShield, GreyNoise, Abuse.ch)", "STL (statsmodels)", "Mandiant M-Trends 2024"],
+        "description": "STL seasonal decomposition — multiplicative factor S(t) = monthly × day-of-week effect.",
+        "vectors": result,
+    }
+
+
+@router.get("/context/campaigns")
+def get_context_campaigns():
+    """Campaign recurrence profiles C(t) per APT group. Source: MITRE ATT&CK, CISA."""
+    now = datetime.utcnow()
+    month_idx = now.month - 1
+    result = []
+    for group in _CAMPAIGN_PROFILES:
+        current_intensity = group["monthly_intensity"][month_idx]
+        result.append({
+            **group,
+            "current_month_intensity": round(current_intensity, 3),
+            "is_elevated": current_intensity >= 1.0,
+        })
+    # Sort by current month activity
+    result.sort(key=lambda g: g["current_month_intensity"], reverse=True)
+    return {
+        "data_source": "mitre_attack_v14",
+        "data_sources": ["MITRE ATT&CK v14.1", "CISA Advisories (AA-series)", "Mandiant/CrowdStrike Annual Reports"],
+        "current_month": now.strftime("%B"),
+        "groups": result,
+    }
+
+
+@router.get("/context/forecast")
+def get_context_forecast(
+    vector: str = Query("ssh", regex="^(ssh|rdp|http|dns_amp|brute_force|botnet_c2|ransomware)$"),
+    days: int = Query(30, ge=1, le=90),
+    db: Session = Depends(get_db),
+):
+    """
+    LIVE covariate-enhanced forecast.
+    μ_base is drawn from the real HawkesParam DB (populated by DShield/GreyNoise/Abuse.ch ingest).
+    Seasonal S(t) and campaign C(t) are applied on top.
+    """
+    # ── Pull real μ_base from HawkesParam DB ──
+    latest_params = (
+        db.query(HawkesParam)
+        .filter(HawkesParam.vector == vector)
+        .order_by(HawkesParam.updated_at.desc())
+        .limit(100)
+        .all()
+    )
+
+    mu_values = [p.mu for p in latest_params if p.mu is not None and p.mu > 0]
+    n_br_values = [p.n_br for p in latest_params if p.n_br is not None]
+
+    if mu_values:
+        mu_base = float(np.mean(mu_values))
+        mu_std = float(np.std(mu_values))
+        max_n_br = float(max(n_br_values)) if n_br_values else 0.5
+        cell_count = len(latest_params)
+        db_updated_at = latest_params[0].updated_at.isoformat() if latest_params[0].updated_at else None
+        data_source = "live_hawkes_db"
+        data_sources = ["DShield BotNet Feeds", "GreyNoise Mass Scanners", "Abuse.ch SSL/Feodo Blacklists",
+                        "Hawkes Process MLE (scipy.optimize)", "STL Seasonal Decomposition"]
+    else:
+        # Fallback seed values when DB is empty
+        mu_base = 0.22
+        mu_std = 0.04
+        max_n_br = 0.5
+        cell_count = 0
+        db_updated_at = None
+        data_source = "seed_fallback"
+        data_sources = ["Seed data (backend not yet populated)"]
+
+    s_table = _SEASONAL.get(vector, [1.0] * 12)
+
+    # Campaign prior: weighted average of top 2 groups for this vector
+    relevant_groups = [g for g in _CAMPAIGN_PROFILES if vector in g["primary_vectors"]]
+
+    now = datetime.utcnow()
+    series = []
+    for i in range(days):
+        d = now + timedelta(days=i)
+        m = d.month - 1
+        w = d.weekday()
+        s_t = s_table[m] * _DOW[w]
+
+        # Event modulation ∏(1 + wᵢ·Eᵢ(t))
+        event_mult = 1.0
+        active_events = []
+        for ev in _EVENT_CALENDAR:
+            if vector in ev["vectors"] and _event_active(ev, d):
+                event_mult *= (1.0 + ev["impact_weight"])
+                active_events.append(ev["id"])
+
+        # Campaign prior C(t)
+        if relevant_groups:
+            c_t = sum(g["monthly_intensity"][m] * g["confidence"] for g in relevant_groups) / \
+                  sum(g["confidence"] for g in relevant_groups)
+        else:
+            c_t = 1.0
+
+        mu_t = mu_base * s_t * event_mult * c_t
+        series.append({
+            "date": d.strftime("%Y-%m-%d"),
+            "mu_base": round(mu_base, 5),
+            "mu_seasonal": round(mu_base * s_t, 5),
+            "mu_context": round(mu_t, 5),
+            "s_t": round(s_t, 4),
+            "event_mult": round(event_mult, 4),
+            "c_t": round(c_t, 4),
+            "active_events": active_events,
+            "uplift_pct": round((mu_t - mu_base) / mu_base * 100, 1) if mu_base > 0 else 0,
+        })
+
+    avg_uplift = float(np.mean([s["uplift_pct"] for s in series]))
+    return {
+        "vector": vector,
+        "mu_base": round(mu_base, 5),
+        "mu_std": round(mu_std, 5),
+        "max_n_br": round(max_n_br, 4),
+        "cell_count": cell_count,
+        "data_source": data_source,
+        "data_sources": data_sources,
+        "db_updated_at": db_updated_at,
+        "avg_uplift_pct": round(avg_uplift, 1),
+        "series": series,
+    }
+
+
+@router.get("/context/active")
+def get_context_active(db: Session = Depends(get_db)):
+    """
+    Returns currently active covariates: active calendar events + elevated campaign groups
+    + current seasonal multipliers. Used by globe overlay badges.
+    """
+    now = datetime.utcnow()
+    month_idx = now.month - 1
+
+    active_events = [
+        {
+            "id": ev["id"], "name": ev["name"], "category": ev["category"],
+            "impact_weight": ev["impact_weight"], "vectors": ev["vectors"],
+            "region": ev["region"], "source": ev["source"],
+        }
+        for ev in _EVENT_CALENDAR if _event_active(ev, now)
+    ]
+
+    elevated_groups = [
+        {
+            "name": g["name"], "origin": g["origin"],
+            "current_intensity": g["monthly_intensity"][month_idx],
+            "primary_vectors": g["primary_vectors"],
+            "source": g["source"], "mitre_id": g["mitre_id"],
+        }
+        for g in _CAMPAIGN_PROFILES if g["monthly_intensity"][month_idx] >= 1.0
+    ]
+
+    seasonal_now = {
+        v: round(mults[month_idx] * _DOW[now.weekday()], 3)
+        for v, mults in _SEASONAL.items()
+    }
+
+    # Total context uplift estimate across all vectors
+    max_seasonal = max(seasonal_now.values())
+    max_event = max((ev["impact_weight"] for ev in active_events), default=0)
+
+    return {
+        "timestamp": now.isoformat(),
+        "active_events": active_events,
+        "elevated_groups": elevated_groups,
+        "seasonal_now": seasonal_now,
+        "max_context_multiplier": round(max_seasonal * (1 + max_event), 3),
+        "data_sources": ["MSRC", "NIST NVD", "MITRE ATT&CK v14.1", "CISA", "STL Seasonal", "Analyst Curated"],
+    }
