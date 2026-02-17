@@ -310,8 +310,8 @@ Day 6-7: Performance optimization & polish
 7. **Only map with collaborative annotations**
 
 This will be **demonstrably more advanced** than:
-- Kaspersky Cyberthreat Real-Time Map
 - Fortinet Threat Map
+- CheckPoint ThreatCloud Map
 - FireEye Cyber Threat Map
 - Any publicly available threat visualization
 

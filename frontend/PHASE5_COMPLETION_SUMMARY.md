@@ -222,8 +222,8 @@ interface TemporalReplayControlsProps {
 5. ✅ **Only map with Cyber Kill Chain phase tracking**
 
 ### Competitive Advantages Over:
-- Kaspersky Cyberthreat Real-Time Map
 - Fortinet Threat Map
+- CheckPoint ThreatCloud Map
 - FireEye Cyber Threat Map
 - Any publicly available threat visualization
 
