@@ -9,6 +9,14 @@ interface TemporalReplayControlsProps {
 }
 
 type PlaybackSpeed = 1 | 4 | 16;
+type WindowOption = { label: string; ms: number };
+
+const WINDOW_OPTIONS: WindowOption[] = [
+  { label: '6h',  ms: 6  * 3600_000 },
+  { label: '24h', ms: 24 * 3600_000 },
+  { label: '48h', ms: 48 * 3600_000 },
+  { label: '7d',  ms: 7  * 86400_000 },
+];
 
 const TemporalReplayControls: React.FC<TemporalReplayControlsProps> = ({
   onTimeChange,
@@ -20,12 +28,11 @@ const TemporalReplayControls: React.FC<TemporalReplayControlsProps> = ({
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<PlaybackSpeed>(1);
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
+  const [windowMs, setWindowMs] = useState<number>(48 * 3600_000);
 
   const playbackTimerRef = useRef<number | null>(null);
 
-  // Constants
-  const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
-  const minTime = Date.now() - FORTY_EIGHT_HOURS_MS;
+  const minTime = Date.now() - windowMs;
   const maxTime = Date.now();
 
   // Format timestamp for display
@@ -151,9 +158,25 @@ const TemporalReplayControls: React.FC<TemporalReplayControlsProps> = ({
         <div className="time-offset">{getTimeOffset(currentTime)}</div>
       </div>
 
-      {/* 48-Hour Scrubber */}
+      {/* Window selector */}
+      <div className="replay-window-selector">
+        {WINDOW_OPTIONS.map((opt) => (
+          <button
+            key={opt.label}
+            className={`window-button ${windowMs === opt.ms ? 'window-active' : ''}`}
+            onClick={() => {
+              setWindowMs(opt.ms);
+              if (!isLive) setCurrentTime(t => Math.max(t, Date.now() - opt.ms));
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Scrubber */}
       <div className="replay-scrubber-container">
-        <div className="scrubber-label-start">-48h</div>
+        <div className="scrubber-label-start">-{WINDOW_OPTIONS.find(o => o.ms === windowMs)?.label ?? '48h'}</div>
         <input
           type="range"
           min={minTime}

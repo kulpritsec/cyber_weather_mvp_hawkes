@@ -43,6 +43,43 @@
   letter-spacing: 0.5px;
 }
 
+/* Window selector */
+.replay-window-selector {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+}
+
+.window-button {
+  padding: 4px 11px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 5px;
+  color: #8B92A4;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.window-button:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #FFFFFF;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.window-active {
+  background: rgba(0, 204, 255, 0.12);
+  color: #00ccff;
+  border-color: rgba(0, 204, 255, 0.4);
+}
+
+.window-active:hover {
+  background: rgba(0, 204, 255, 0.18);
+}
+
 /* Scrubber Container */
 .replay-scrubber-container {
   display: grid;
