@@ -1,7 +1,10 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, AsyncGenerator
 import numpy as np
+import asyncio
+import json
 try:
     from scipy.interpolate import griddata
     from matplotlib import pyplot as plt
@@ -10,7 +13,7 @@ try:
 except ImportError:
     CONTOURS_AVAILABLE = False
 from ..db import SessionLocal
-from ..models import Nowcast, Forecast, HawkesParam, Advisory, GridCell
+from ..models import Nowcast, Forecast, HawkesParam, Advisory, GridCell, Event
 from ..schemas import FeatureCollection, GeoFeature, AdvisoryOut
 from ..utils.geo import cell_polygon
 from datetime import datetime, timedelta, timezone
@@ -128,6 +131,118 @@ def get_pipeline_status():
     """Get pipeline orchestrator health status and scheduler information"""
     from ..services.pipeline import get_pipeline_status
     return get_pipeline_status()
+
+@router.get("/events/stream")
+async def stream_events(request: Request, db: Session = Depends(get_db)):
+    """
+    Server-Sent Events endpoint for real-time threat event streaming
+
+    - Sends 50 most recent events on connect
+    - Polls for new events every 2 seconds
+    - Sends keepalive every 15 seconds
+    - Supports Last-Event-ID header for reconnection
+    """
+
+    def derive_action(vector: str, port: Optional[int]) -> str:
+        """Derive human-readable action from vector and port"""
+        action_map = {
+            ('ssh', 22): 'SSH Brute Force',
+            ('ssh', 23): 'Telnet Brute Force',
+            ('rdp', 3389): 'RDP Spray Attack',
+            ('rdp', 445): 'SMB Enumeration',
+            ('http', 80): 'HTTP Web Probe',
+            ('http', 443): 'HTTPS Web Probe',
+            ('dns_amp', 53): 'DNS Amplification',
+            ('brute_force', None): 'Credential Stuffing',
+            ('botnet_c2', None): 'Botnet C2 Communication',
+            ('ransomware', None): 'Ransomware Activity',
+        }
+
+        # Try exact match first
+        key = (vector, port)
+        if key in action_map:
+            return action_map[key]
+
+        # Fallback to vector-only match
+        for (v, p), action in action_map.items():
+            if v == vector and p is None:
+                return action
+
+        # Default
+        return f"{vector.upper()} Activity"
+
+    def format_event(event: Event, event_id: int) -> str:
+        """Format event as SSE message"""
+        event_data = {
+            'id': event_id,
+            'ts': event.ts.isoformat() if event.ts else datetime.now(timezone.utc).isoformat(),
+            'vector': event.vector,
+            'source_ip': event.source_ip,
+            'source_country': event.source_country or 'XX',
+            'target_port': event.target_port,
+            'lat': float(event.lat),
+            'lon': float(event.lon),
+            'action': derive_action(event.vector, event.target_port),
+            'severity': float(event.severity_raw) if event.severity_raw else 0.5,
+            'count': event.count or 1,
+        }
+
+        return f"id: {event_id}\ndata: {json.dumps(event_data)}\n\n"
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        """Generate SSE stream"""
+        # Get Last-Event-ID from header for reconnection support
+        last_event_id = request.headers.get('Last-Event-ID', '0')
+        try:
+            last_id = int(last_event_id)
+        except ValueError:
+            last_id = 0
+
+        # Send initial burst of 50 most recent events
+        recent_events = db.query(Event).order_by(Event.ts.desc()).limit(50).all()
+
+        for idx, event in enumerate(reversed(recent_events), start=last_id + 1):
+            yield format_event(event, idx)
+
+        current_id = last_id + len(recent_events)
+        last_seen_ts = recent_events[0].ts if recent_events else datetime.now(timezone.utc)
+        last_keepalive = datetime.now()
+
+        # Stream new events as they arrive
+        while True:
+            # Check if client disconnected
+            if await request.is_disconnected():
+                break
+
+            # Poll for new events
+            new_events = db.query(Event).filter(
+                Event.ts > last_seen_ts
+            ).order_by(Event.ts.asc()).limit(100).all()
+
+            if new_events:
+                for event in new_events:
+                    current_id += 1
+                    yield format_event(event, current_id)
+                    last_seen_ts = event.ts
+
+            # Send keepalive comment if no events
+            now = datetime.now()
+            if (now - last_keepalive).total_seconds() > 15:
+                yield ": keepalive\n\n"
+                last_keepalive = now
+
+            # Wait 2 seconds before next poll
+            await asyncio.sleep(2)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
 
 # Legacy compatibility endpoints
 @router.get("/nowcast", response_model=FeatureCollection)
