@@ -466,20 +466,6 @@ The frontend features an interactive Three.js globe with real-time threat visual
 
 ---
 
-## 📝 Development Runbook
-
-For detailed implementation guidance, see:
-`C:\Users\Seanw\Downloads\threat weather map\Cyber_Weather_MVP_Development_Runbook.docx`
-
-The runbook contains:
-- Complete Claude Code prompts for each component
-- Backend data pipeline specifications
-- Frontend UI component build sequence
-- Testing strategies
-- Deployment checklists
-
----
-
 ## 🐛 Troubleshooting
 
 ### **MaxMind Database Not Found**
