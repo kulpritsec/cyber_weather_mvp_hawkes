@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { fetchCyberData, fetchAdvisories } from "../lib/api";
 
 // ─── PANEL IMPORTS ───────────────────────────────────────────────────────
-import { ArcDetailPanel, HotspotCellPanel, PredictiveContextPanel } from './Panels';
+import { ArcDetailPanel, HotspotCellPanel, PredictiveContextPanel, MathLabPanel, InfrastructurePanel } from './Panels';
 import type { ArcData, HotspotCellData } from './Panels';
 import { TemporalReplayControls } from './ReplayControls';
 import {
@@ -656,6 +656,8 @@ export default function CyberWeatherGlobe() {
 
   // Panel state
   const [showContextEngine, setShowContextEngine] = useState(false);
+  const [showMathLab, setShowMathLab] = useState(false);
+  const [showInfrastructure, setShowInfrastructure] = useState(false);
   const [selectedArc, setSelectedArc] = useState<ArcData | null>(null);
   const [arcPanelPos, setArcPanelPos] = useState({ x: 0, y: 0 });
   const [selectedCell, setSelectedCell] = useState<HotspotCellData | null>(null);
@@ -748,7 +750,7 @@ export default function CyberWeatherGlobe() {
   // ─── KEYBOARD SHORTCUTS ───────────────────────────────────────────────
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setSelectedArc(null); setSelectedCell(null); setShowContextEngine(false); }
+      if (e.key === 'Escape') { setSelectedArc(null); setSelectedCell(null); setShowContextEngine(false); setShowMathLab(false); setShowInfrastructure(false); }
       if (e.key === 'l' || e.key === 'L') setIsLiveMode((v) => !v);
     };
     window.addEventListener('keydown', handleKey);
@@ -902,6 +904,44 @@ export default function CyberWeatherGlobe() {
             </div>
           </button>
 
+          {/* ─── MATH LAB BUTTON ─── */}
+          <button
+            onClick={() => setShowMathLab((v) => !v)}
+            style={{
+              display: "flex", flexDirection: "column", alignItems: "center",
+              padding: "6px 14px", borderRadius: "4px",
+              background: showMathLab ? "rgba(0,204,255,0.15)" : "rgba(0,204,255,0.05)",
+              border: `1px solid ${showMathLab ? "rgba(0,204,255,0.5)" : "rgba(0,204,255,0.2)"}`,
+              cursor: "pointer", transition: "background 0.15s, border-color 0.15s",
+            }}
+          >
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "9px", color: "rgba(0,204,255,0.6)", letterSpacing: "0.15em", marginBottom: "2px" }}>
+              MATH LAB
+            </div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "13px", fontWeight: 800, color: showMathLab ? "#00ccff" : "rgba(0,204,255,0.6)", letterSpacing: "0.08em" }}>
+              ∫ λ(t)
+            </div>
+          </button>
+
+          {/* ─── INFRASTRUCTURE BUTTON ─── */}
+          <button
+            onClick={() => setShowInfrastructure((v) => !v)}
+            style={{
+              display: "flex", flexDirection: "column", alignItems: "center",
+              padding: "6px 14px", borderRadius: "4px",
+              background: showInfrastructure ? "rgba(34,197,94,0.15)" : "rgba(34,197,94,0.05)",
+              border: `1px solid ${showInfrastructure ? "rgba(34,197,94,0.5)" : "rgba(34,197,94,0.2)"}`,
+              cursor: "pointer", transition: "background 0.15s, border-color 0.15s",
+            }}
+          >
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "9px", color: "rgba(34,197,94,0.6)", letterSpacing: "0.15em", marginBottom: "2px" }}>
+              TOPOLOGY
+            </div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "13px", fontWeight: 800, color: showInfrastructure ? "#22c55e" : "rgba(34,197,94,0.6)", letterSpacing: "0.08em" }}>
+              🌐 NET
+            </div>
+          </button>
+
           <div
             style={{
               padding: "6px 16px",
@@ -1047,6 +1087,16 @@ export default function CyberWeatherGlobe() {
       {/* ─── PREDICTIVE CONTEXT ENGINE ─── */}
       {showContextEngine && (
         <PredictiveContextPanel onClose={() => setShowContextEngine(false)} />
+      )}
+
+      {/* ─── MATH LAB ─── */}
+      {showMathLab && (
+        <MathLabPanel onClose={() => setShowMathLab(false)} />
+      )}
+
+      {/* ─── INFRASTRUCTURE TOPOLOGY ─── */}
+      {showInfrastructure && (
+        <InfrastructurePanel onClose={() => setShowInfrastructure(false)} />
       )}
 
       {/* ─── ARC DETAIL PANEL ─── */}

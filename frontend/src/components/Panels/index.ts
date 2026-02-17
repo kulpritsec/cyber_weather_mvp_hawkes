@@ -28,3 +28,7 @@ export type { HotspotCellData } from './HotspotCellPanel';
 
 // Predictive Context Engine
 export { PredictiveContextPanel } from './PredictiveContextPanel';
+
+// Math Lab & Infrastructure
+export { default as MathLabPanel } from './MathLabPanel';
+export { default as InfrastructurePanel } from './InfrastructurePanel';
