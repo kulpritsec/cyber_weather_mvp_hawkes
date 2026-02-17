@@ -340,3 +340,188 @@ def _get_contour_data(vector: str, horizon: int, res: float, levels: int, db: Se
             features.append(feature)
     
     return FeatureCollection(type="FeatureCollection", features=features)
+
+@router.get("/snapshots")
+def get_snapshots(
+    start: Optional[int] = Query(None, description="Start timestamp (Unix time)"),
+    end: Optional[int] = Query(None, description="End timestamp (Unix time)"),
+    vector: Optional[str] = Query(None, description="Filter by vector"),
+    res: float = Query(2.5),
+    db: Session = Depends(get_db)
+):
+    """
+    Get historical Hawkes parameter snapshots for temporal replay.
+
+    Returns time-series data of Hawkes parameters for all grid cells
+    within the specified time range.
+    """
+    # Default to last 48 hours if not specified
+    if end is None:
+        end_dt = datetime.now(timezone.utc)
+    else:
+        end_dt = datetime.fromtimestamp(end, tz=timezone.utc)
+
+    if start is None:
+        start_dt = end_dt - timedelta(hours=48)
+    else:
+        start_dt = datetime.fromtimestamp(start, tz=timezone.utc)
+
+    # Query Hawkes parameters within time range
+    query = db.query(HawkesParam, GridCell).join(
+        GridCell, HawkesParam.grid_id == GridCell.id
+    ).filter(
+        HawkesParam.updated_at >= start_dt,
+        HawkesParam.updated_at <= end_dt,
+        GridCell.res_deg == res
+    )
+
+    if vector:
+        query = query.filter(HawkesParam.vector == vector)
+
+    # Group by timestamp
+    snapshots = {}
+    for hp, cell in query.all():
+        ts = int(hp.updated_at.timestamp())
+        if ts not in snapshots:
+            snapshots[ts] = []
+
+        snapshots[ts].append({
+            "cell_id": cell.id,
+            "lat": cell.lat_center,
+            "lon": cell.lon_center,
+            "vector": hp.vector,
+            "mu": hp.mu,
+            "beta": hp.beta,
+            "n_br": hp.n_br,
+            "mu_std": hp.mu_std or 0.0,
+            "beta_std": hp.beta_std or 0.0,
+            "n_br_std": hp.n_br_std or 0.0,
+            "stability": "stable" if hp.n_br < 1.0 else "unstable"
+        })
+
+    # Convert to list format
+    snapshot_list = [
+        {
+            "timestamp": ts,
+            "cells": cells
+        }
+        for ts, cells in sorted(snapshots.items())
+    ]
+
+    return {
+        "start": int(start_dt.timestamp()),
+        "end": int(end_dt.timestamp()),
+        "count": len(snapshot_list),
+        "snapshots": snapshot_list
+    }
+
+@router.get("/cells/{cell_id}/history")
+def get_cell_history(
+    cell_id: int,
+    hours: int = Query(48, ge=1, le=168, description="Hours of history to retrieve"),
+    vector: Optional[str] = Query(None, description="Filter by vector"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get 48-hour intensity and branching ratio history for a specific grid cell.
+
+    Returns time-series data suitable for sparkline visualization.
+    """
+    # Verify cell exists
+    cell = db.query(GridCell).filter_by(id=cell_id).first()
+    if not cell:
+        return {"error": "Cell not found", "cell_id": cell_id}, 404
+
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(hours=hours)
+
+    # Query Hawkes parameters for this cell
+    query = db.query(HawkesParam).filter(
+        HawkesParam.grid_id == cell_id,
+        HawkesParam.updated_at >= start_dt,
+        HawkesParam.updated_at <= end_dt
+    )
+
+    if vector:
+        query = query.filter(HawkesParam.vector == vector)
+
+    params = query.order_by(HawkesParam.updated_at.asc()).all()
+
+    # Query nowcast intensities for this cell
+    nowcast_query = db.query(Nowcast).filter(
+        Nowcast.grid_id == cell_id,
+        Nowcast.updated_at >= start_dt,
+        Nowcast.updated_at <= end_dt
+    )
+
+    if vector:
+        nowcast_query = nowcast_query.filter(Nowcast.vector == vector)
+
+    nowcasts = nowcast_query.order_by(Nowcast.updated_at.asc()).all()
+
+    # Build intensity history from nowcasts
+    intensity_history = [
+        {
+            "timestamp": int(nc.updated_at.timestamp()),
+            "value": nc.intensity
+        }
+        for nc in nowcasts
+    ]
+
+    # Build branching ratio history from Hawkes params
+    branching_history = [
+        {
+            "timestamp": int(hp.updated_at.timestamp()),
+            "value": hp.n_br
+        }
+        for hp in params
+    ]
+
+    # Get current Hawkes parameters
+    current_params = db.query(HawkesParam).filter_by(
+        grid_id=cell_id
+    ).order_by(HawkesParam.updated_at.desc()).first()
+
+    # Count events in last 24 hours
+    events_24h = db.query(Event).filter(
+        Event.grid_id == cell_id,
+        Event.ts >= (end_dt - timedelta(hours=24))
+    ).count()
+
+    # Determine severity based on current n_br
+    if current_params:
+        n_br = current_params.n_br
+        if n_br >= 0.9:
+            severity = "emergency"
+        elif n_br >= 0.7:
+            severity = "warning"
+        elif n_br >= 0.5:
+            severity = "watch"
+        elif n_br >= 0.3:
+            severity = "advisory"
+        else:
+            severity = "clear"
+    else:
+        severity = "clear"
+        n_br = 0.0
+
+    return {
+        "cell_id": cell_id,
+        "lat": cell.lat_center,
+        "lon": cell.lon_center,
+        "vector": vector or "all",
+        "current_params": {
+            "mu": current_params.mu if current_params else 0.0,
+            "beta": current_params.beta if current_params else 0.0,
+            "n_br": current_params.n_br if current_params else 0.0,
+        } if current_params else None,
+        "event_count_24h": events_24h,
+        "severity": severity,
+        "intensity_history": intensity_history,
+        "branching_history": branching_history,
+        "time_range": {
+            "start": int(start_dt.timestamp()),
+            "end": int(end_dt.timestamp()),
+            "hours": hours
+        }
+    }
