@@ -57,8 +57,8 @@ class Settings(BaseSettings):
     cache_max_size: int = 1000
 
     # Performance settings
-    db_pool_size: int = 5
-    db_max_overflow: int = 10
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
 
     class Config:
         env_prefix = "CYBER_WEATHER_"
