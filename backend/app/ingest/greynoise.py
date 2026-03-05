@@ -291,7 +291,7 @@ class GreyNoiseIngestor:
             EventModel.source != "greynoise"  # Don't re-query our own events
         ).filter(
             EventModel.ts >= datetime.now(timezone.utc) - timedelta(hours=6)
-        ).limit(10).all()  # Limit to 50 to stay within Community rate limits
+        ).limit(30).all()  # Community API: ~50 lookups/day budget
 
         ips = [e[0] for e in recent_events if e[0]]
         logger.info(f"Enriching {len(ips)} IPs with GreyNoise Community API")
@@ -305,8 +305,8 @@ class GreyNoiseIngestor:
                     self.session.add(event)
                     events_added += 1
 
-            # Rate limiting: 50/day = ~2/minute, so wait 30s between queries
-            await asyncio.sleep(60)
+            # Rate limiting: community ~50/day, spread across 15-min ingest cycles
+            await asyncio.sleep(5)
 
         if events_added > 0:
             self.session.commit()
