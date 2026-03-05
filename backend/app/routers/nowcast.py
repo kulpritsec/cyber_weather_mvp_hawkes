@@ -1,16 +1,11 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from ..db import SessionLocal
 from ..models import Nowcast, GridCell
 from ..schemas import FeatureCollection, GeoFeature
 from ..utils.geo import cell_polygon
+from ..deps import get_db
 
 router = APIRouter(prefix="/v1")
-
-def get_db():
-    db = SessionLocal()
-    try: yield db
-    finally: db.close()
 
 @router.get("/nowcast", response_model=FeatureCollection)
 def get_nowcast(vector: str = Query("ssh"), res: float = Query(2.5), db: Session = Depends(get_db)):

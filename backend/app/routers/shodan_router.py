@@ -14,15 +14,7 @@ from fastapi import APIRouter, Query, Depends
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from ..db import SessionLocal
-from sqlalchemy.orm import Session
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+from ..deps import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/exposure", tags=["shodan-exposure"])

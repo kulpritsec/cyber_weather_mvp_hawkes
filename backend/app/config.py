@@ -1,7 +1,15 @@
-import os
+"""
+Thin shim — all values come from core.config.Settings so there is one
+source of truth.  Modules that still import from here will get the
+same values as modules using ``from ..core.config import get_settings``.
+"""
 
-DB_URL = os.getenv("CYBER_WEATHER_DB_URL", "sqlite:///./cyber_weather.db")
-GRID_RES_DEG = float(os.getenv("CYBER_WEATHER_GRID_RES_DEG", "2.5"))
-EWMA_LAMBDA = float(os.getenv("CYBER_WEATHER_EWMA_LAMBDA", "0.7"))
-FORECAST_PHI = float(os.getenv("CYBER_WEATHER_FORECAST_PHI", "0.4"))
-BASE_TIME_WINDOW_MIN = int(os.getenv("CYBER_WEATHER_WINDOW_MIN", "60"))
+from .core.config import get_settings as _get_settings
+
+_s = _get_settings()
+
+DB_URL: str = _s.effective_db_url
+GRID_RES_DEG: float = _s.grid_resolution_deg
+EWMA_LAMBDA: float = _s.ewma_lambda
+FORECAST_PHI: float = _s.forecast_phi
+BASE_TIME_WINDOW_MIN: int = _s.base_time_window_min

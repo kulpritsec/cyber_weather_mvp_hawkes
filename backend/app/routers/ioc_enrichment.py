@@ -9,7 +9,7 @@ import asyncio
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -88,7 +88,7 @@ async def _query_abuseipdb(indicator: str, ioc_type: str) -> dict:
         return {"source": "abuseipdb", "error": "Only supports IP addresses", "data": None}
     if not ABUSEIPDB_KEY:
         return {"source": "abuseipdb", "error": "ABUSEIPDB_API_KEY not configured", "data": None}
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if _rate["abuseipdb_day"] != today:
         _rate["abuseipdb_day"] = today; _rate["abuseipdb_count_day"] = 0
     if _rate["abuseipdb_count_day"] >= 950:
@@ -264,7 +264,7 @@ async def enrich_ioc(
             if i.get("first_seen"): timeline.append({"source":"ThreatFox","date":i["first_seen"],"label":i.get("malware","IOC")})
     timeline.sort(key=lambda x: x.get("date",""), reverse=True)
     return {"indicator": indicator, "ioc_type": detected, "aggregate_score": agg,
-            "sources": enrichment, "timeline": timeline[:25], "queried_at": datetime.utcnow().isoformat()}
+            "sources": enrichment, "timeline": timeline[:25], "queried_at": datetime.now(timezone.utc).isoformat()}
 
 
 @router.get("/health")

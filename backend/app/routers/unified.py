@@ -13,18 +13,13 @@ try:
     CONTOURS_AVAILABLE = True
 except ImportError:
     CONTOURS_AVAILABLE = False
-from ..db import SessionLocal
 from ..models import Nowcast, Forecast, HawkesParam, Advisory, GridCell, Event
 from ..schemas import FeatureCollection, GeoFeature, AdvisoryOut
 from ..utils.geo import cell_polygon
+from ..deps import get_db
 from datetime import datetime, timedelta, timezone
 
 router = APIRouter(prefix="/v1")
-
-def get_db():
-    db = SessionLocal()
-    try: yield db
-    finally: db.close()
 
 @router.get("/data", response_model=FeatureCollection)
 def get_cyber_data(
@@ -884,7 +879,7 @@ def _event_active(ev: dict, d: datetime) -> bool:
 @router.get("/context/events")
 def get_context_events():
     """Event calendar with active/upcoming status. Source: MSRC, Imperva, MITRE, Analyst."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     result = []
     for ev in _EVENT_CALENDAR:
         active = _event_active(ev, now)
@@ -907,7 +902,7 @@ def get_context_events():
 @router.get("/context/seasonal")
 def get_context_seasonal():
     """Seasonal multipliers S(t) per vector. Derived from STL decomposition of 3yr historical data."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     month_idx = now.month - 1
     dow_idx = now.weekday()
     result = {}
@@ -931,7 +926,7 @@ def get_context_seasonal():
 @router.get("/context/campaigns")
 def get_context_campaigns():
     """Campaign recurrence profiles C(t) per APT group. Source: MITRE ATT&CK, CISA."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     month_idx = now.month - 1
     result = []
     for group in _CAMPAIGN_PROFILES:
@@ -998,7 +993,7 @@ def get_context_forecast(
     # Campaign prior: weighted average of top 2 groups for this vector
     relevant_groups = [g for g in _CAMPAIGN_PROFILES if vector in g["primary_vectors"]]
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     series = []
     for i in range(days):
         d = now + timedelta(days=i)
@@ -1055,7 +1050,7 @@ def get_context_active(db: Session = Depends(get_db)):
     Returns currently active covariates: active calendar events + elevated campaign groups
     + current seasonal multipliers. Used by globe overlay badges.
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     month_idx = now.month - 1
 
     active_events = [
