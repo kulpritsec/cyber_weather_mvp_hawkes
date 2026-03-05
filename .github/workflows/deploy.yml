@@ -1,0 +1,32 @@
+name: Deploy to Linode
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          port: ${{ secrets.SSH_PORT }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ~/cyber-weather/app
+            
+            # Pull latest code
+            git pull origin main
+            
+            # Build and deploy
+            docker compose build --no-cache backend frontend
+            docker compose up -d backend frontend
+            
+            # Verify
+            sleep 10
+            curl -sf http://localhost:8000/healthz || exit 1
+            echo "Deploy successful"
