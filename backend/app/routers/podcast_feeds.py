@@ -1,18 +1,14 @@
 """Podcast Feeds API — /v1/podcast/*"""
-import json, logging
+import logging
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Query, Depends
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from ..db import SessionLocal
+
+from ..deps import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/podcast", tags=["podcast-feeds"])
-
-def get_db():
-    db = SessionLocal()
-    try: yield db
-    finally: db.close()
 
 @router.get("/kev/recent")
 def get_recent_kevs(days: int = Query(default=30), db: Session = Depends(get_db)):
@@ -31,13 +27,16 @@ def get_recent_kevs(days: int = Query(default=30), db: Session = Depends(get_db)
 
 @router.get("/kev/stats")
 def get_kev_stats(db: Session = Depends(get_db)):
+    now = datetime.now(timezone.utc)
+    week_cutoff = (now - timedelta(days=7)).date()
+    month_cutoff = (now - timedelta(days=30)).date()
     s = db.execute(text("""
         SELECT COUNT(*) as total,
-               COUNT(*) FILTER (WHERE ransomware_use = 'Known') as ransomware_linked,
-               COUNT(*) FILTER (WHERE date_added >= CURRENT_DATE - 7) as week,
-               COUNT(*) FILTER (WHERE date_added >= CURRENT_DATE - 30) as month,
+               SUM(CASE WHEN ransomware_use = 'Known' THEN 1 ELSE 0 END) as ransomware_linked,
+               SUM(CASE WHEN date_added >= :week_cutoff THEN 1 ELSE 0 END) as week,
+               SUM(CASE WHEN date_added >= :month_cutoff THEN 1 ELSE 0 END) as month,
                COUNT(DISTINCT vendor) as vendors FROM cisa_kev
-    """)).fetchone()
+    """), {"week_cutoff": week_cutoff, "month_cutoff": month_cutoff}).fetchone()
     tv = db.execute(text("SELECT vendor, COUNT(*) as cnt FROM cisa_kev GROUP BY vendor ORDER BY cnt DESC LIMIT 10")).fetchall()
     return {"total": s.total, "ransomware_linked": s.ransomware_linked,
             "added_this_week": s.week, "added_this_month": s.month,
@@ -59,9 +58,10 @@ def get_recent_ransomware(days: int = Query(default=7), db: Session = Depends(ge
 
 @router.get("/ransomware/stats")
 def get_ransomware_stats(db: Session = Depends(get_db)):
-    tg = db.execute(text("SELECT group_name, COUNT(*) as v FROM ransomware_victims WHERE discovered_at >= NOW()-INTERVAL '30 days' GROUP BY group_name ORDER BY v DESC LIMIT 10")).fetchall()
-    ts = db.execute(text("SELECT sector, COUNT(*) as c FROM ransomware_victims WHERE sector IS NOT NULL AND sector != '' AND discovered_at >= NOW()-INTERVAL '30 days' GROUP BY sector ORDER BY c DESC LIMIT 10")).fetchall()
-    tc = db.execute(text("SELECT country, COUNT(*) as c FROM ransomware_victims WHERE country IS NOT NULL AND country != '' AND discovered_at >= NOW()-INTERVAL '30 days' GROUP BY country ORDER BY c DESC LIMIT 10")).fetchall()
+    cutoff_30d = datetime.now(timezone.utc) - timedelta(days=30)
+    tg = db.execute(text("SELECT group_name, COUNT(*) as v FROM ransomware_victims WHERE discovered_at >= :cutoff GROUP BY group_name ORDER BY v DESC LIMIT 10"), {"cutoff": cutoff_30d}).fetchall()
+    ts = db.execute(text("SELECT sector, COUNT(*) as c FROM ransomware_victims WHERE sector IS NOT NULL AND sector != '' AND discovered_at >= :cutoff GROUP BY sector ORDER BY c DESC LIMIT 10"), {"cutoff": cutoff_30d}).fetchall()
+    tc = db.execute(text("SELECT country, COUNT(*) as c FROM ransomware_victims WHERE country IS NOT NULL AND country != '' AND discovered_at >= :cutoff GROUP BY country ORDER BY c DESC LIMIT 10"), {"cutoff": cutoff_30d}).fetchall()
     total = db.execute(text("SELECT COUNT(*) FROM ransomware_victims")).scalar()
     return {"total_victims": total,
             "top_groups_30d": [{"group": r.group_name, "victims": r.v} for r in tg],

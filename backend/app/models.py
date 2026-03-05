@@ -19,7 +19,7 @@ class Event(Base):
     target_port = Column(Integer)
     severity_raw = Column(Float)
     tags = Column(Text)  # JSON
-    raw_ref = Column(String)
+    raw_ref = Column(String, index=True)
 
 Index("ix_events_time_vector", Event.ts, Event.vector)
 # ix_events_source auto-created by index=True on Event.source
@@ -162,3 +162,47 @@ VECTOR_SEED = [
     {"name": "botnet_c2",  "display_name": "Botnet C2",          "color_hex": "#ffd740", "default_mu": 0.08, "default_beta": 0.90, "sort_order": 5},
     {"name": "ransomware", "display_name": "Ransomware Deploy",  "color_hex": "#ff1744", "default_mu": 0.05, "default_beta": 0.60, "sort_order": 6},
 ]
+
+
+class Exposure(Base):
+    """Individual exposed service discovered by Shodan searches."""
+    __tablename__ = "exposures"
+    id = Column(Integer, primary_key=True, index=True)
+    query_tag = Column(String, index=True)
+    query_string = Column(String)
+    total_results = Column(Integer)
+    ip = Column(String)
+    port = Column(Integer)
+    transport = Column(String)
+    product = Column(String)
+    version = Column(String)
+    os = Column(String)
+    org = Column(String)
+    asn = Column(String)
+    country_code = Column(String, index=True)
+    city = Column(String)
+    lat = Column(Float)
+    lon = Column(Float)
+    vulns = Column(Text)       # JSON list of CVE IDs
+    tags = Column(Text)        # JSON list
+    last_seen = Column(String)
+    fetched_at = Column(DateTime, index=True)
+
+    __table_args__ = (
+        Index("uq_exposure_tag_ip_port", "query_tag", "ip", "port", unique=True),
+    )
+
+
+class ExposureSnapshot(Base):
+    """Aggregate snapshot per Shodan query run."""
+    __tablename__ = "exposure_snapshots"
+    id = Column(Integer, primary_key=True, index=True)
+    query_tag = Column(String, index=True)
+    query_string = Column(String)
+    total_global = Column(Integer)
+    sample_count = Column(Integer)
+    top_countries = Column(Text)   # JSON
+    top_ports = Column(Text)       # JSON
+    top_orgs = Column(Text)        # JSON
+    top_vulns = Column(Text)       # JSON
+    fetched_at = Column(DateTime, index=True)

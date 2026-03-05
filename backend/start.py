@@ -40,36 +40,23 @@ def build_nowcast():
 
 def fit_models(hours=24, min_events=50, bootstrap=True):
     """Fit Hawkes process models"""
-    print(f"🧠 Fitting Hawkes models (min_events={min_events}, bootstrap={bootstrap})...")
-    if bootstrap:
-        # Temporarily modify the hawkes_fit to use bootstrap
-        original_file = backend_dir / "app" / "services" / "hawkes_fit.py"
-        with open(original_file, 'r') as f:
-            content = f.read()
-        if "bootstrap_samples=20" not in content:
-            content = content.replace(
-                "params = fit_hawkes_exponential(times, counts, T)",
-                "params = fit_hawkes_exponential(times, counts, T, bootstrap_samples=20)"
-            )
-            with open(original_file, 'w') as f:
-                f.write(content)
-    
+    print(f"Fitting Hawkes models (min_events={min_events}, bootstrap={bootstrap})...")
+    # bootstrap_samples is already configured via hawkes_fit.py (default=5)
+    # and via core/config.py Settings.hawkes_bootstrap_samples
     fit_hawkes(hours=hours, min_events=min_events)
-    print("✅ Hawkes models fitted")
+    print("Hawkes models fitted")
 
 def ingest_threat_feeds():
-    """Ingest real-time threat intelligence feeds"""
-    print("🛡️ Ingesting threat intelligence feeds...")
+    """Ingest real-time threat intelligence feeds via pipeline."""
+    print("Ingesting threat intelligence feeds...")
     try:
-        from app.services.threat_feeds import ingest_threat_feeds
-        count = asyncio.run(ingest_threat_feeds())
-        print(f"✅ Processed {count} threat indicators")
-        return count
-    except ImportError as e:
-        print(f"⚠️ Threat feeds disabled: {e}")
-        return 0
+        from app.services.pipeline import run_ingest_cycle
+        count = asyncio.run(run_ingest_cycle())
+        total = count.get("total_events", 0) if isinstance(count, dict) else 0
+        print(f"Processed {total} threat events")
+        return total
     except Exception as e:
-        print(f"❌ Error ingesting threat feeds: {e}")
+        print(f"Error ingesting threat feeds: {e}")
         return 0
 
 def start_server(port=8000, reload=True):

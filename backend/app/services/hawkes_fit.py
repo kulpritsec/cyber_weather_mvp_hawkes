@@ -169,9 +169,13 @@ def _ensure_cell(session: Session, lat_idx: int, lon_idx: int) -> GridCell:
     return cell
 
 
-def run(hours: int = 24, min_events: int = 50, vectors=("ssh", "rdp", "http", "dns_amp")):
+def run(hours: int = 24, min_events: int = 50, vectors=None):
+    from ..models import VectorConfig, VECTOR_SEED
     Base.metadata.create_all(bind=engine)
     session = SessionLocal()
+    if vectors is None:
+        vc_rows = session.query(VectorConfig).filter(VectorConfig.is_active == True).order_by(VectorConfig.sort_order).all()
+        vectors = [r.name for r in vc_rows] if vc_rows else [v["name"] for v in VECTOR_SEED]
     for vector in vectors:
         logger.info(f"Fitting {vector}...")
         result = fit_vector(session, vector, hours=hours, min_events=min_events)

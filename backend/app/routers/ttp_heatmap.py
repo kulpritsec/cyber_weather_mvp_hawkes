@@ -8,14 +8,15 @@ import os
 import json
 import httpx
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from collections import defaultdict
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-from ..db import SessionLocal
+from ..deps import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/ttp", tags=["ttp-heatmap"])
@@ -219,7 +220,7 @@ CACHE_TTL = 3600
 
 async def _get_alchemy_technique_map():
     if (_alchemy_cache["data"] and _alchemy_cache["ts"]
-            and (datetime.utcnow() - _alchemy_cache["ts"]).seconds < CACHE_TTL):
+            and (datetime.now(timezone.utc) - _alchemy_cache["ts"]).seconds < CACHE_TTL):
         return _alchemy_cache["data"]
 
     technique_to_groups = defaultdict(list)
@@ -244,7 +245,7 @@ async def _get_alchemy_technique_map():
                     continue
 
         _alchemy_cache["data"] = dict(technique_to_groups)
-        _alchemy_cache["ts"] = datetime.utcnow()
+        _alchemy_cache["ts"] = datetime.now(timezone.utc)
         logger.info(f"Alchemy cache: {len(technique_to_groups)} techniques from {len(groups)} groups")
     except Exception as e:
         logger.error(f"Alchemy cache build failed: {e}")
@@ -256,9 +257,11 @@ async def _get_alchemy_technique_map():
 @router.get("/heatmap")
 async def ttp_heatmap(
     hours: int = Query(24, description="Lookback window in hours"),
+    db: Session = Depends(get_db),
 ):
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
-    cutoff_7d = datetime.utcnow() - timedelta(days=7)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=hours)
+    cutoff_7d = now - timedelta(days=7)
 
     technique_counts = defaultdict(lambda: {
         "count": 0, "count_7d": 0,
@@ -267,149 +270,142 @@ async def ttp_heatmap(
     })
     technique_meta = {}
 
-    db = SessionLocal()
-    try:
-        result = db.execute(text("""
-            SELECT vector, target_port, tags, source, source_country,
-                   count, ts, EXTRACT(EPOCH FROM ts) as ts_epoch
-            FROM events WHERE ts >= :cutoff_7d ORDER BY ts DESC
-        """), {"cutoff_7d": cutoff_7d})
+    result = db.execute(text("""
+        SELECT vector, target_port, tags, source, source_country,
+               count, ts, EXTRACT(EPOCH FROM ts) as ts_epoch
+        FROM events WHERE ts >= :cutoff_7d ORDER BY ts DESC
+    """), {"cutoff_7d": cutoff_7d})
 
-        for row in result:
-            vector, port, tags, source, country = row[0], row[1], row[2], row[3], row[4]
-            evt_count, ts, ts_epoch = row[5] or 1, row[6], row[7]
+    for row in result:
+        vector, port, tags, source, country = row[0], row[1], row[2], row[3], row[4]
+        evt_count, ts, ts_epoch = row[5] or 1, row[6], row[7]
 
-            techniques = _map_event_to_techniques(vector, port, tags)
-            for tid, tname, tactic in techniques:
-                technique_meta[tid] = (tname, tactic)
-                bucket = technique_counts[tid]
-                if ts >= cutoff:
-                    bucket["count"] += evt_count
-                    bucket["hourly"][int(ts_epoch // 3600)] += evt_count
-                bucket["count_7d"] += evt_count
-                if source: bucket["sources"][source] += evt_count
-                if country and country != "XX": bucket["countries"][country] += evt_count
+        techniques = _map_event_to_techniques(vector, port, tags)
+        for tid, tname, tactic in techniques:
+            technique_meta[tid] = (tname, tactic)
+            bucket = technique_counts[tid]
+            if ts >= cutoff:
+                bucket["count"] += evt_count
+                bucket["hourly"][int(ts_epoch // 3600)] += evt_count
+            bucket["count_7d"] += evt_count
+            if source: bucket["sources"][source] += evt_count
+            if country and country != "XX": bucket["countries"][country] += evt_count
 
-        alchemy_map = await _get_alchemy_technique_map()
+    alchemy_map = await _get_alchemy_technique_map()
 
-        now_epoch = datetime.utcnow().timestamp()
-        sparkline_start = int((now_epoch - hours * 3600) // 3600)
-        sparkline_hours = list(range(sparkline_start, int(now_epoch // 3600) + 1))
+    now_epoch = now.timestamp()
+    sparkline_start = int((now_epoch - hours * 3600) // 3600)
+    sparkline_hours = list(range(sparkline_start, int(now_epoch // 3600) + 1))
 
-        techniques_out = {}
-        for tid, bucket in technique_counts.items():
-            if tid not in technique_meta: continue
-            name, tactic = technique_meta[tid]
-            sparkline = [bucket["hourly"].get(h, 0) for h in sparkline_hours]
+    techniques_out = {}
+    for tid, bucket in technique_counts.items():
+        if tid not in technique_meta: continue
+        name, tactic = technique_meta[tid]
+        sparkline = [bucket["hourly"].get(h, 0) for h in sparkline_hours]
 
-            recent = sum(sparkline[-6:]) if len(sparkline) >= 6 else sum(sparkline)
-            prior = sum(sparkline[-12:-6]) if len(sparkline) >= 12 else sum(sparkline[:len(sparkline)//2])
-            if prior > 0:
-                ratio = recent / prior
-                trend = "increasing" if ratio > 1.3 else "decreasing" if ratio < 0.7 else "stable"
-            else:
-                trend = "increasing" if recent > 0 else "stable"
+        recent = sum(sparkline[-6:]) if len(sparkline) >= 6 else sum(sparkline)
+        prior = sum(sparkline[-12:-6]) if len(sparkline) >= 12 else sum(sparkline[:len(sparkline)//2])
+        if prior > 0:
+            ratio = recent / prior
+            trend = "increasing" if ratio > 1.3 else "decreasing" if ratio < 0.7 else "stable"
+        else:
+            trend = "increasing" if recent > 0 else "stable"
 
-            top_sources = sorted(bucket["sources"].items(), key=lambda x: -x[1])[:5]
-            top_countries = sorted(bucket["countries"].items(), key=lambda x: -x[1])[:5]
+        top_sources = sorted(bucket["sources"].items(), key=lambda x: -x[1])[:5]
+        top_countries = sorted(bucket["countries"].items(), key=lambda x: -x[1])[:5]
 
-            techniques_out[tid] = {
-                "id": tid, "name": name, "tactic": tactic,
-                "count_24h": bucket["count"], "count_7d": bucket["count_7d"],
-                "trend": trend,
-                "sparkline": sparkline,
-                "groups": alchemy_map.get(tid, [])[:10],
-                "top_sources": [s[0] for s in top_sources],
-                "top_countries": [c[0] for c in top_countries],
-            }
-
-        top_techniques = sorted(techniques_out.values(), key=lambda t: t["count_24h"], reverse=True)
-
-        return {
-            "tactics": [{"id": t, "label": TACTIC_LABELS[t]} for t in TACTICS],
-            "techniques": techniques_out,
-            "top_techniques": [t["id"] for t in top_techniques[:20]],
-            "total_events_mapped": sum(t["count_24h"] for t in techniques_out.values()),
-            "unique_techniques_active": len([t for t in techniques_out.values() if t["count_24h"] > 0]),
-            "queried_at": datetime.utcnow().isoformat(),
-            "window_hours": hours,
+        techniques_out[tid] = {
+            "id": tid, "name": name, "tactic": tactic,
+            "count_24h": bucket["count"], "count_7d": bucket["count_7d"],
+            "trend": trend,
+            "sparkline": sparkline,
+            "groups": alchemy_map.get(tid, [])[:10],
+            "top_sources": [s[0] for s in top_sources],
+            "top_countries": [c[0] for c in top_countries],
         }
-    finally:
-        db.close()
+
+    top_techniques = sorted(techniques_out.values(), key=lambda t: t["count_24h"], reverse=True)
+
+    return {
+        "tactics": [{"id": t, "label": TACTIC_LABELS[t]} for t in TACTICS],
+        "techniques": techniques_out,
+        "top_techniques": [t["id"] for t in top_techniques[:20]],
+        "total_events_mapped": sum(t["count_24h"] for t in techniques_out.values()),
+        "unique_techniques_active": len([t for t in techniques_out.values() if t["count_24h"] > 0]),
+        "queried_at": now.isoformat(),
+        "window_hours": hours,
+    }
 
 
 @router.get("/technique/{technique_id}")
-async def technique_detail(technique_id: str, hours: int = Query(24)):
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
-    db = SessionLocal()
-    try:
-        result = db.execute(text("""
-            SELECT vector, target_port, tags, source, source_ip,
-                   source_country, count, ts, severity_raw, lat, lon
-            FROM events WHERE ts >= :cutoff ORDER BY ts DESC LIMIT 5000
-        """), {"cutoff": cutoff})
+async def technique_detail(
+    technique_id: str,
+    hours: int = Query(24),
+    db: Session = Depends(get_db),
+):
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-        hourly, sources, countries, ips = defaultdict(int), defaultdict(int), defaultdict(int), defaultdict(int)
-        matching_events = []
+    result = db.execute(text("""
+        SELECT vector, target_port, tags, source, source_ip,
+               source_country, count, ts, severity_raw, lat, lon
+        FROM events WHERE ts >= :cutoff ORDER BY ts DESC LIMIT 5000
+    """), {"cutoff": cutoff})
 
-        for row in result:
-            vector, port, tags, source, src_ip = row[0], row[1], row[2], row[3], row[4]
-            country, count, ts, severity, lat, lon = row[5], row[6], row[7], row[8], row[9], row[10]
-            techniques = _map_event_to_techniques(vector, port, tags)
-            if technique_id not in [t[0] for t in techniques]: continue
+    hourly, sources, countries, ips = defaultdict(int), defaultdict(int), defaultdict(int), defaultdict(int)
+    matching_events = []
 
-            evt_count = count or 1
-            hour_key = ts.strftime("%Y-%m-%d %H:00") if ts else "unknown"
-            hourly[hour_key] += evt_count
-            if source: sources[source] += evt_count
-            if country and country != "XX": countries[country] += evt_count
-            if src_ip: ips[src_ip] += evt_count
+    for row in result:
+        vector, port, tags, source, src_ip = row[0], row[1], row[2], row[3], row[4]
+        country, count, ts, severity, lat, lon = row[5], row[6], row[7], row[8], row[9], row[10]
+        techniques = _map_event_to_techniques(vector, port, tags)
+        if technique_id not in [t[0] for t in techniques]: continue
 
-            if len(matching_events) < 20:
-                matching_events.append({
-                    "ts": ts.isoformat() if ts else None,
-                    "source_ip": src_ip, "country": country,
-                    "vector": vector, "port": port, "source": source,
-                    "severity": severity, "count": count,
-                    "lat": lat, "lon": lon,
-                })
+        evt_count = count or 1
+        hour_key = ts.strftime("%Y-%m-%d %H:00") if ts else "unknown"
+        hourly[hour_key] += evt_count
+        if source: sources[source] += evt_count
+        if country and country != "XX": countries[country] += evt_count
+        if src_ip: ips[src_ip] += evt_count
 
-        alchemy_map = await _get_alchemy_technique_map()
-        return {
-            "technique_id": technique_id,
-            "total_events": sum(hourly.values()),
-            "timeline": dict(sorted(hourly.items())),
-            "top_sources": dict(sorted(sources.items(), key=lambda x: -x[1])[:10]),
-            "top_countries": dict(sorted(countries.items(), key=lambda x: -x[1])[:10]),
-            "top_ips": dict(sorted(ips.items(), key=lambda x: -x[1])[:10]),
-            "recent_events": matching_events,
-            "alchemy_groups": alchemy_map.get(technique_id, []),
-            "queried_at": datetime.utcnow().isoformat(),
-        }
-    finally:
-        db.close()
+        if len(matching_events) < 20:
+            matching_events.append({
+                "ts": ts.isoformat() if ts else None,
+                "source_ip": src_ip, "country": country,
+                "vector": vector, "port": port, "source": source,
+                "severity": severity, "count": count,
+                "lat": lat, "lon": lon,
+            })
+
+    alchemy_map = await _get_alchemy_technique_map()
+    return {
+        "technique_id": technique_id,
+        "total_events": sum(hourly.values()),
+        "timeline": dict(sorted(hourly.items())),
+        "top_sources": dict(sorted(sources.items(), key=lambda x: -x[1])[:10]),
+        "top_countries": dict(sorted(countries.items(), key=lambda x: -x[1])[:10]),
+        "top_ips": dict(sorted(ips.items(), key=lambda x: -x[1])[:10]),
+        "recent_events": matching_events,
+        "alchemy_groups": alchemy_map.get(technique_id, []),
+        "queried_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @router.get("/health")
-async def ttp_health():
-    db = SessionLocal()
+async def ttp_health(db: Session = Depends(get_db)):
+    result = db.execute(text(
+        "SELECT COUNT(*), MAX(ts) FROM events WHERE ts >= :cutoff"
+    ), {"cutoff": datetime.now(timezone.utc) - timedelta(hours=24)})
+    row = result.fetchone()
+    alchemy_ok = False
     try:
-        result = db.execute(text(
-            "SELECT COUNT(*), MAX(ts) FROM events WHERE ts >= NOW() - INTERVAL '24 hours'"
-        ))
-        row = result.fetchone()
-        alchemy_ok = False
-        try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                r = await client.get(f"{ALCHEMY_BASE}/groups")
-                alchemy_ok = r.status_code == 200
-        except Exception: pass
-        return {
-            "events_24h": row[0] if row else 0,
-            "latest_event": row[1].isoformat() if row and row[1] else None,
-            "alchemy_connected": alchemy_ok,
-            "technique_rules": len(TECHNIQUE_MAP),
-            "malware_rules": len(MALWARE_TECHNIQUE_MAP),
-        }
-    finally:
-        db.close()
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(f"{ALCHEMY_BASE}/groups")
+            alchemy_ok = r.status_code == 200
+    except Exception: pass
+    return {
+        "events_24h": row[0] if row else 0,
+        "latest_event": row[1].isoformat() if row and row[1] else None,
+        "alchemy_connected": alchemy_ok,
+        "technique_rules": len(TECHNIQUE_MAP),
+        "malware_rules": len(MALWARE_TECHNIQUE_MAP),
+    }
