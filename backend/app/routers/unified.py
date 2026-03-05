@@ -208,23 +208,15 @@ def get_vectors(db: Session = Depends(get_db)):
 
 
 
-# Country centroids for arc visualization
-COUNTRY_CENTROIDS = {
-    "US": (39.8, -98.5), "CN": (35.9, 104.2), "RU": (61.5, 105.3), "DE": (51.2, 10.4),
-    "GB": (55.4, -3.4), "FR": (46.2, 2.2), "JP": (36.2, 138.3), "KR": (35.9, 127.8),
-    "BR": (-14.2, -51.9), "IN": (20.6, 79.0), "NL": (52.1, 5.3), "AU": (-25.3, 133.8),
-    "CA": (56.1, -106.3), "IT": (41.9, 12.6), "SE": (60.1, 18.6), "SG": (1.4, 103.8),
-    "HK": (22.4, 114.1), "UA": (48.4, 31.2), "BG": (42.7, 25.5), "IE": (53.4, -8.2),
-    "PL": (51.9, 19.1), "RO": (45.9, 25.0), "TW": (23.7, 121.0), "VN": (14.1, 108.3),
-    "ID": (-0.8, 113.9), "TH": (15.9, 100.9), "AR": (-38.4, -63.6), "ZA": (-30.6, 22.9),
-}
+# Country centroids — import comprehensive list from ingest module
+from ..ingest.country_centroids import COUNTRY_CENTROIDS
 
 @router.get("/top-countries")
 def get_top_countries(db: Session = Depends(get_db)):
     """Top attacking and targeted countries from recent events"""
     rows = db.execute(text("""
         SELECT source_country, vector, COUNT(*) as cnt,
-               ROUND(AVG(severity_raw)::numeric, 2) as avg_severity
+               ROUND(CAST(AVG(severity_raw) AS numeric), 2) as avg_severity
         FROM events
         WHERE ts > NOW() - INTERVAL '24 hours' AND source_country IS NOT NULL
         GROUP BY source_country, vector
@@ -1213,35 +1205,38 @@ def get_top_flows(
     from datetime import datetime, timedelta, timezone
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
+    # Use portable SQL (no ::numeric cast or MODE() WITHIN GROUP)
     rows = db.execute(text("""
         SELECT source_country, vector, event_count, avg_lat, avg_lon, unique_ips, top_port
         FROM (
             SELECT source_country, vector, COUNT(*) as event_count,
-                   ROUND(AVG(lat)::numeric, 2) as avg_lat,
-                   ROUND(AVG(lon)::numeric, 2) as avg_lon,
+                   ROUND(CAST(AVG(lat) AS numeric), 2) as avg_lat,
+                   ROUND(CAST(AVG(lon) AS numeric), 2) as avg_lon,
                    COUNT(DISTINCT source_ip) as unique_ips,
-                   MODE() WITHIN GROUP (ORDER BY target_port) as top_port,
+                   MIN(target_port) as top_port,
                    ROW_NUMBER() OVER (PARTITION BY source_country ORDER BY COUNT(*) DESC) as rn
             FROM events
             WHERE source_country IS NOT NULL
               AND source_country != ''
               AND ts >= :cutoff
             GROUP BY source_country, vector
-            HAVING COUNT(*) >= 3
+            HAVING COUNT(*) >= 2
         ) ranked
-        WHERE rn <= 2
+        WHERE rn <= 3
         ORDER BY event_count DESC
         LIMIT :limit
     """), {"cutoff": cutoff, "limit": limit}).fetchall()
 
     flows = []
     for r in rows:
+        cc = r.source_country
+        centroid = COUNTRY_CENTROIDS.get(cc)
         flows.append({
-            "source_country": r.source_country,
+            "source_country": cc,
             "vector": r.vector,
             "event_count": r.event_count,
-            "avg_lat": float(r.avg_lat) if r.avg_lat else 0,
-            "avg_lon": float(r.avg_lon) if r.avg_lon else 0,
+            "avg_lat": float(r.avg_lat) if r.avg_lat else (centroid[0] if centroid else 0),
+            "avg_lon": float(r.avg_lon) if r.avg_lon else (centroid[1] if centroid else 0),
             "unique_ips": r.unique_ips,
             "top_port": r.top_port,
         })

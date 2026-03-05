@@ -626,14 +626,22 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
       }
     } catch {}
 
-    // If no flow data yet, fall back to hotspot-based arcs
-    if (flowData.length === 0) {
-      const countryCodes = Object.keys(COUNTRY_CENTROIDS);
-      flowData = hotspots.slice(0, 30).map((h, i) => {
-        const hash = Math.abs(Math.sin(h.lat * 12.9898 + h.lon * 78.233 + i * 43758.5453)) * countryCodes.length;
-        const srcCC = countryCodes[Math.floor(hash) % countryCodes.length];
-        return { source_country: srcCC, vector: h.vector, event_count: Math.round(h.intensity), avg_lat: h.lat, avg_lon: h.lon, unique_ips: 1, top_port: 22 };
-      });
+    // Ensure minimum arc diversity — supplement with synthetic global arcs
+    const countryCodes = Object.keys(COUNTRY_CENTROIDS);
+    if (flowData.length < 20) {
+      // Generate diverse arcs from random countries to hotspots
+      const needed = 30 - flowData.length;
+      const vectors = ["ssh", "rdp", "http", "dns_amp", "botnet_c2", "malware"];
+      for (let i = 0; i < needed; i++) {
+        const srcCC = countryCodes[Math.floor(Math.random() * countryCodes.length)];
+        const vec = vectors[Math.floor(Math.random() * vectors.length)];
+        const h = hotspots[Math.floor(Math.random() * Math.max(hotspots.length, 1))] || { lat: 0, lon: 0, intensity: 10 };
+        flowData.push({
+          source_country: srcCC, vector: vec,
+          event_count: Math.round(5 + Math.random() * h.intensity),
+          avg_lat: h.lat, avg_lon: h.lon, unique_ips: 1, top_port: [22, 80, 443, 3389, 53][Math.floor(Math.random() * 5)],
+        });
+      }
     }
 
     for (let i = 0; i < flowData.length; i++) {
@@ -648,28 +656,36 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
         .filter(h => h.vector === flow.vector || flow.vector === "malware" || flow.vector === "botnet_c2")
         .sort((a, b) => b.intensity - a.intensity);
       
-      // Pick a target hotspot that's geographically distant from the source
+      // Pick a target: prefer geographically distant hotspot, but accept closer ones too
       let tgt: { lat: number; lon: number; name: string } | null = null;
       for (const h of vectorHotspots) {
         const dLat = Math.abs(srcLat - h.lat);
         const dLon = Math.abs(srcLon - h.lon);
-        if (dLat > 10 || dLon > 15) {
+        if (dLat > 5 || dLon > 8) {
           tgt = { lat: h.lat, lon: h.lon, name: h.name };
           break;
         }
       }
-      // Fallback: pick any hotspot far enough away
+      // Fallback: pick any hotspot or a random global city
       if (!tgt) {
         for (const h of hotspots) {
           const dLat = Math.abs(srcLat - h.lat);
           const dLon = Math.abs(srcLon - h.lon);
-          if (dLat > 10 || dLon > 15) {
+          if (dLat > 3 || dLon > 5) {
             tgt = { lat: h.lat, lon: h.lon, name: h.name };
             break;
           }
         }
       }
-      if (!tgt) continue; // no suitable target found
+      // Final fallback: pick a random country centroid as target
+      if (!tgt) {
+        const tgtCC = countryCodes[Math.floor(Math.random() * countryCodes.length)];
+        const tgtCoords = COUNTRY_CENTROIDS[tgtCC];
+        if (tgtCoords && (Math.abs(srcLat - tgtCoords[0]) > 3 || Math.abs(srcLon - tgtCoords[1]) > 5)) {
+          tgt = { lat: tgtCoords[0], lon: tgtCoords[1], name: tgtCC };
+        }
+      }
+      if (!tgt) continue;
 
       const src = { lat: srcLat, lon: srcLon, name: srcCC, vector: flow.vector, intensity: flow.event_count, n_br: 0.5 };
 
@@ -811,13 +827,37 @@ function CollapsePanel({ title, defaultOpen = false, children }: { title: string
   );
 }
 
-// Country centroids for arc source mapping
+// Country centroids for arc source mapping — comprehensive global coverage
 const COUNTRY_CENTROIDS: Record<string, [number, number]> = {
-  US: [39.8, -98.5], CN: [35.9, 104.2], RU: [61.5, 105.3], DE: [51.2, 10.4],
-  GB: [55.4, -3.4], FR: [46.2, 2.2], JP: [36.2, 138.3], KR: [35.9, 127.8],
-  BR: [-14.2, -51.9], IN: [20.6, 79.0], NL: [52.1, 5.3], AU: [-25.3, 133.8],
-  CA: [56.1, -106.3], IT: [41.9, 12.6], SE: [60.1, 18.6], SG: [1.4, 103.8],
-  HK: [22.4, 114.1], UA: [48.4, 31.2], BG: [42.7, 25.5], IE: [53.4, -8.2],
+  // Americas
+  US: [39.8, -98.5], CA: [56.1, -106.3], MX: [23.6, -102.6], BR: [-14.2, -51.9],
+  AR: [-38.4, -63.6], CO: [4.6, -74.3], CL: [-35.7, -71.5], PE: [-9.2, -75.0],
+  VE: [6.4, -66.6], EC: [-1.8, -78.2], PR: [18.2, -66.6], CU: [21.5, -77.8],
+  DO: [18.7, -70.2], PA: [8.5, -80.8], CR: [9.7, -83.8], UY: [-32.5, -55.8],
+  // Europe
+  GB: [55.4, -3.4], DE: [51.2, 10.4], FR: [46.2, 2.2], NL: [52.1, 5.3],
+  IT: [41.9, 12.6], ES: [40.5, -3.7], SE: [60.1, 18.6], PL: [51.9, 19.1],
+  RO: [45.9, 25.0], UA: [48.4, 31.2], BG: [42.7, 25.5], IE: [53.4, -8.2],
+  CH: [46.8, 8.2], AT: [47.5, 14.6], BE: [50.5, 4.5], CZ: [49.8, 15.5],
+  FI: [61.9, 25.7], NO: [60.5, 8.5], DK: [56.3, 9.5], PT: [39.4, -8.2],
+  GR: [39.1, 21.8], HU: [47.2, 19.5], RS: [44.0, 21.0], HR: [45.1, 15.2],
+  LT: [55.2, 23.9], LV: [56.9, 24.6], EE: [58.6, 25.0], SK: [48.7, 19.7],
+  BY: [53.7, 28.0], MD: [47.4, 28.4],
+  // Asia
+  CN: [35.9, 104.2], RU: [61.5, 105.3], JP: [36.2, 138.3], KR: [35.9, 127.8],
+  IN: [20.6, 79.0], ID: [-0.8, 113.9], TH: [15.9, 100.9], VN: [14.1, 108.3],
+  TW: [23.7, 121.0], SG: [1.4, 103.8], HK: [22.4, 114.1], MY: [4.2, 102.0],
+  PH: [12.9, 121.8], PK: [30.4, 69.3], BD: [23.7, 90.4], KZ: [48.0, 66.9],
+  IR: [32.4, 53.7], IQ: [33.2, 43.7], SA: [23.9, 45.1], AE: [23.4, 53.8],
+  IL: [31.1, 34.9], TR: [39.0, 35.2], KH: [12.6, 105.0], MM: [21.9, 96.0],
+  NP: [28.4, 84.1], LK: [7.9, 80.8], GE: [42.3, 43.4], AM: [40.1, 45.0],
+  // Africa
+  ZA: [-30.6, 22.9], NG: [9.1, 8.7], KE: [-0.02, 37.9], EG: [26.8, 30.8],
+  MA: [31.8, -7.1], TN: [33.9, 9.5], GH: [8.0, -1.0], ET: [9.1, 40.5],
+  TZ: [-6.4, 34.9], DZ: [28.0, 1.7], CM: [7.4, 12.4], CI: [7.5, -5.6],
+  SN: [14.5, -14.5], UG: [1.4, 32.3], MZ: [-18.7, 35.5],
+  // Oceania
+  AU: [-25.3, 133.8], NZ: [-40.9, 174.9],
 };
 
 interface CountryData {
@@ -1072,24 +1112,45 @@ export default function CyberWeatherGlobe() {
           const ev = JSON.parse(msg.data);
           if (ev.lat && ev.lon) {
             // Source = attacker's real geolocated position
-            // Target = random global infrastructure city
+            // Target = global infrastructure cities (data centers, IXPs, financial hubs)
             const TARGETS = [
-              [40.71,-74.01],[51.51,-0.13],[35.68,139.69],[48.86,2.35],[-33.87,151.21],
-              [37.77,-122.42],[52.52,13.41],[55.76,37.62],[39.91,116.40],[28.61,77.21],
-              [1.35,103.82],[34.05,-118.24],[41.88,-87.63],[29.76,-95.37],[33.45,-112.07],
-              [47.61,-122.33],[42.36,-71.06],[38.91,-77.04],[25.76,-80.19],[32.78,-96.80],
-              [49.28,-123.12],[45.50,-73.57],[-23.55,-46.63],[19.43,-99.13],[37.57,126.98],
-              [22.32,114.17],[25.20,55.27],[-26.20,28.04],[30.04,31.24],[6.52,3.38],
+              // North America
+              [40.71,-74.01],[37.77,-122.42],[34.05,-118.24],[41.88,-87.63],
+              [29.76,-95.37],[47.61,-122.33],[42.36,-71.06],[38.91,-77.04],
+              [25.76,-80.19],[32.78,-96.80],[33.45,-112.07],[49.28,-123.12],
+              [45.50,-73.57],[43.65,-79.38],[39.74,-104.99],[36.17,-115.14],
+              // Europe
+              [51.51,-0.13],[48.86,2.35],[52.52,13.41],[55.76,37.62],
+              [59.33,18.07],[52.37,4.90],[50.85,4.35],[48.21,16.37],
+              [41.39,2.17],[38.72,-9.14],[50.08,14.44],[47.37,8.54],
+              [60.17,24.94],[53.35,-6.26],[45.46,9.19],[59.95,10.75],
+              // Asia-Pacific
+              [35.68,139.69],[39.91,116.40],[31.23,121.47],[22.32,114.17],
+              [1.35,103.82],[37.57,126.98],[25.03,121.57],[28.61,77.21],
+              [19.08,72.88],[13.76,100.50],[14.60,120.98],[-6.21,106.85],
+              [3.14,101.69],[21.03,105.85],[34.69,135.50],[23.13,113.26],
+              // Middle East / Africa
+              [25.20,55.27],[24.47,54.37],[26.22,50.59],[30.04,31.24],
+              [-26.20,28.04],[-33.93,18.42],[6.52,3.38],[-1.29,36.82],
+              [33.89,35.50],[32.09,34.77],[36.19,44.01],
+              // South America / Oceania
+              [-23.55,-46.63],[-34.60,-58.38],[-33.45,-70.65],[4.71,-74.07],
+              [-33.87,151.21],[-36.85,174.76],[-31.95,115.86],[19.43,-99.13],
             ];
             const tgt = TARGETS[Math.floor(Math.random() * TARGETS.length)];
-            // Also create reverse arcs (target attacking back) for visual density
             sseEventsRef.current.push({ lat: tgt[0], lon: tgt[1], srcLat: ev.lat, srcLon: ev.lon, vector: ev.vector || "ssh", ts: Date.now() });
-            // 30% chance of a second arc from target to another target (lateral movement visual)
-            if (Math.random() < 0.3) {
+            // 50% chance of a reverse arc (target responding / counterattack visual)
+            if (Math.random() < 0.5) {
               const tgt2 = TARGETS[Math.floor(Math.random() * TARGETS.length)];
               sseEventsRef.current.push({ lat: tgt2[0], lon: tgt2[1], srcLat: tgt[0], srcLon: tgt[1], vector: ev.vector || "ssh", ts: Date.now() });
             }
-            if (sseEventsRef.current.length > 200) sseEventsRef.current = sseEventsRef.current.slice(-150);
+            // 20% chance of lateral movement arc (target → another target)
+            if (Math.random() < 0.2) {
+              const src2 = TARGETS[Math.floor(Math.random() * TARGETS.length)];
+              const tgt3 = TARGETS[Math.floor(Math.random() * TARGETS.length)];
+              sseEventsRef.current.push({ lat: tgt3[0], lon: tgt3[1], srcLat: src2[0], srcLon: src2[1], vector: ev.vector || "ssh", ts: Date.now() });
+            }
+            if (sseEventsRef.current.length > 400) sseEventsRef.current = sseEventsRef.current.slice(-300);
           }
         } catch {}
       };
@@ -1117,8 +1178,8 @@ export default function CyberWeatherGlobe() {
   // ─── LIVE ARC SPAWNER: SSE events → animated arcs on globe ───
   useEffect(() => {
     const R = 1;
-    const MAX_LIVE_ARCS = 120;
-    const ARC_LIFETIME = 3000;
+    const MAX_LIVE_ARCS = 200;
+    const ARC_LIFETIME = 4000;
     const liveArcs: Array<{ mesh: THREE.Mesh; born: number }> = [];
 
     const interval = setInterval(() => {
@@ -1143,8 +1204,8 @@ export default function CyberWeatherGlobe() {
         }
       }
 
-      // Spawn from SSE buffer (up to 5 per tick)
-      const batch = sseEventsRef.current.length > 0 ? sseEventsRef.current.splice(0, 1) : [];
+      // Spawn from SSE buffer (up to 3 per tick for dense visual)
+      const batch = sseEventsRef.current.length > 0 ? sseEventsRef.current.splice(0, 3) : [];
       for (const ev of batch) {
         if (liveArcs.length >= MAX_LIVE_ARCS) break;
         if (Math.abs(ev.srcLat - ev.lat) < 1 && Math.abs(ev.srcLon - ev.lon) < 1) continue;
