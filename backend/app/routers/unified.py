@@ -246,164 +246,162 @@ def get_top_countries(db: Session = Depends(get_db)):
     ranked = sorted(countries.values(), key=lambda x: -x["total"])[:15]
     return {"countries": ranked, "timestamp": datetime.now(timezone.utc).isoformat()}
 
+# ─── SSE helpers (module-level so both stream endpoints can use them) ────
+
+_ACTION_MAP = {
+    ('ssh', 22): 'SSH Brute Force',
+    ('ssh', 23): 'Telnet Brute Force',
+    ('ssh', None): 'SSH Scan',
+    ('rdp', 3389): 'RDP Spray Attack',
+    ('rdp', 445): 'SMB Enumeration',
+    ('rdp', None): 'RDP Scan',
+    ('http', 80): 'HTTP Web Probe',
+    ('http', 443): 'HTTPS Web Probe',
+    ('http', 8080): 'HTTP Proxy Scan',
+    ('http', None): 'HTTP Scan',
+    ('dns_amp', 53): 'DNS Amplification',
+    ('dns_amp', None): 'DNS Reflection',
+    ('malware', 443): 'Malware C2 Beacon',
+    ('malware', 80): 'Malware Dropper',
+    ('malware', None): 'Malware Activity',
+    ('brute_force', None): 'Credential Stuffing',
+    ('botnet_c2', 443): 'Botnet C2 Encrypted',
+    ('botnet_c2', 80): 'Botnet C2 Beacon',
+    ('botnet_c2', None): 'Botnet C2 Communication',
+    ('ransomware', 445): 'Ransomware Lateral Movement',
+    ('ransomware', None): 'Ransomware Activity',
+}
+
+def _derive_action(vector: str, port: Optional[int]) -> str:
+    key = (vector, port)
+    if key in _ACTION_MAP:
+        return _ACTION_MAP[key]
+    for (v, p), action in _ACTION_MAP.items():
+        if v == vector and p is None:
+            return action
+    return f"{vector.upper()} Activity"
+
+def _format_sse(event_id: int, *, vector: str, ts, source_ip: str,
+                source_country: str, target_port, lat, lon,
+                severity_raw, count, source) -> str:
+    event_data = {
+        'id': event_id,
+        'ts': ts.isoformat() if ts else datetime.now(timezone.utc).isoformat(),
+        'vector': vector,
+        'source_ip': source_ip,
+        'source_country': source_country or 'XX',
+        'target_port': target_port,
+        'lat': float(lat),
+        'lon': float(lon),
+        'action': _derive_action(vector, target_port),
+        'severity': float(severity_raw) if severity_raw else 0.5,
+        'count': count or 1,
+        'source': source or 'unknown',
+    }
+    return f"id: {event_id}\ndata: {json.dumps(event_data)}\n\n"
+
+def _format_event(event: Event, event_id: int) -> str:
+    return _format_sse(event_id, vector=event.vector, ts=event.ts,
+                       source_ip=event.source_ip,
+                       source_country=event.source_country,
+                       target_port=event.target_port, lat=event.lat,
+                       lon=event.lon, severity_raw=event.severity_raw,
+                       count=event.count, source=event.source)
+
+def _format_row(row, event_id: int) -> str:
+    return _format_sse(event_id, vector=row.vector, ts=row.ts,
+                       source_ip=row.source_ip,
+                       source_country=row.source_country,
+                       target_port=row.target_port, lat=row.lat,
+                       lon=row.lon, severity_raw=row.severity_raw,
+                       count=row.count, source=row.source)
+
+
 @router.get("/events/stream")
-async def stream_events(request: Request, db: Session = Depends(get_db)):
+async def stream_events(request: Request):
     """
-    Server-Sent Events endpoint for real-time threat event streaming
+    Server-Sent Events endpoint for real-time threat event streaming.
 
-    - Sends 50 most recent events on connect
-    - Polls for new events every 2 seconds
-    - Sends keepalive every 15 seconds
-    - Supports Last-Event-ID header for reconnection
+    Uses short-lived DB sessions per poll cycle to avoid holding a
+    connection for the lifetime of the stream (prevents pool exhaustion
+    on page refresh).
     """
-
-    def derive_action(vector: str, port: Optional[int]) -> str:
-        """Derive human-readable action from vector and port"""
-        action_map = {
-            ('ssh', 22): 'SSH Brute Force',
-            ('ssh', 23): 'Telnet Brute Force',
-            ('ssh', None): 'SSH Scan',
-            ('rdp', 3389): 'RDP Spray Attack',
-            ('rdp', 445): 'SMB Enumeration',
-            ('rdp', None): 'RDP Scan',
-            ('http', 80): 'HTTP Web Probe',
-            ('http', 443): 'HTTPS Web Probe',
-            ('http', 8080): 'HTTP Proxy Scan',
-            ('http', None): 'HTTP Scan',
-            ('dns_amp', 53): 'DNS Amplification',
-            ('dns_amp', None): 'DNS Reflection',
-            ('malware', 443): 'Malware C2 Beacon',
-            ('malware', 80): 'Malware Dropper',
-            ('malware', None): 'Malware Activity',
-            ('brute_force', None): 'Credential Stuffing',
-            ('botnet_c2', 443): 'Botnet C2 Encrypted',
-            ('botnet_c2', 80): 'Botnet C2 Beacon',
-            ('botnet_c2', None): 'Botnet C2 Communication',
-            ('ransomware', 445): 'Ransomware Lateral Movement',
-            ('ransomware', None): 'Ransomware Activity',
-        }
-
-        # Try exact match first
-        key = (vector, port)
-        if key in action_map:
-            return action_map[key]
-
-        # Fallback to vector-only match
-        for (v, p), action in action_map.items():
-            if v == vector and p is None:
-                return action
-
-        # Default
-        return f"{vector.upper()} Activity"
-
-    def format_event(event: Event, event_id: int) -> str:
-        """Format event as SSE message"""
-        event_data = {
-            'id': event_id,
-            'ts': event.ts.isoformat() if event.ts else datetime.now(timezone.utc).isoformat(),
-            'vector': event.vector,
-            'source_ip': event.source_ip,
-            'source_country': event.source_country or 'XX',
-            'target_port': event.target_port,
-            'lat': float(event.lat),
-            'lon': float(event.lon),
-            'action': derive_action(event.vector, event.target_port),
-            'severity': float(event.severity_raw) if event.severity_raw else 0.5,
-            'count': event.count or 1,
-            'source': event.source or 'unknown',
-        }
-
-        return f"id: {event_id}\ndata: {json.dumps(event_data)}\n\n"
+    from ..db import SessionLocal
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        """Generate SSE stream"""
-        # Get Last-Event-ID from header for reconnection support
         last_event_id = request.headers.get('Last-Event-ID', '0')
         try:
             last_id = int(last_event_id)
         except ValueError:
             last_id = 0
 
-        # Send initial burst of 50 most recent events
-        # Sample across vectors for diverse ticker — interleave
-        vectors_in_db = [v[0] for v in db.query(Event.vector).distinct().all()]
-        per_vector = max(5, 50 // max(len(vectors_in_db), 1))
-        buckets = {}
-        for vn in vectors_in_db:
-            buckets[vn] = list(reversed(db.query(Event).filter(Event.vector == vn).order_by(Event.ts.desc()).limit(per_vector).all()))
-        # Round-robin interleave
-        recent_events = []
-        max_len = max((len(b) for b in buckets.values()), default=0)
-        for i in range(max_len):
+        # ── Initial burst: 50 most recent events (short-lived session) ──
+        db = SessionLocal()
+        try:
+            vectors_in_db = [v[0] for v in db.query(Event.vector).distinct().all()]
+            per_vector = max(5, 50 // max(len(vectors_in_db), 1))
+            buckets = {}
             for vn in vectors_in_db:
-                if i < len(buckets[vn]):
-                    recent_events.append(buckets[vn][i])
-        recent_events = recent_events[:50]
+                buckets[vn] = list(reversed(
+                    db.query(Event).filter(Event.vector == vn)
+                    .order_by(Event.ts.desc()).limit(per_vector).all()
+                ))
+            recent_events = []
+            max_len = max((len(b) for b in buckets.values()), default=0)
+            for i in range(max_len):
+                for vn in vectors_in_db:
+                    if i < len(buckets.get(vn, [])):
+                        recent_events.append(buckets[vn][i])
+            recent_events = recent_events[:50]
+        finally:
+            db.close()
 
         for idx, event in enumerate(reversed(recent_events), start=last_id + 1):
-            yield format_event(event, idx)
+            yield _format_event(event, idx)
 
         current_id = last_id + len(recent_events)
         last_seen_ts = max(e.ts for e in recent_events) if recent_events else datetime.now(timezone.utc)
         last_keepalive = datetime.now()
 
-        # Stream new events as they arrive
+        # ── Polling loop ──
         while True:
-            # Check if client disconnected
             if await request.is_disconnected():
                 break
 
-            # Poll for new events — interleave across vectors for diverse ticker
-            new_events = []
-            for vec in vectors_in_db:
-                vec_events = db.query(Event).filter(
-                    Event.ts > last_seen_ts,
-                    Event.vector == vec
-                ).order_by(Event.ts.desc()).limit(5).all()
-                new_events.extend(vec_events)
+            db = SessionLocal()
+            try:
+                # Check for genuinely new events
+                new_events = []
+                for vec in vectors_in_db:
+                    vec_events = db.query(Event).filter(
+                        Event.ts > last_seen_ts, Event.vector == vec
+                    ).order_by(Event.ts.desc()).limit(5).all()
+                    new_events.extend(vec_events)
 
-            if new_events:
-                # Sort by ts so we advance last_seen_ts correctly
-                new_events.sort(key=lambda e: e.ts)
-                for event in new_events:
-                    current_id += 1
-                    yield format_event(event, current_id)
-                    if event.ts > last_seen_ts:
-                        last_seen_ts = event.ts
-            else:
-                # No new events — replay random recent events for continuous visual stream
-                import random as _rng
-                # Fast replay using TABLESAMPLE (0.1s for 15 rows vs 0.8s for offset)
-                replay_rows = db.execute(text(
-                    "SELECT * FROM events TABLESAMPLE BERNOULLI(0.01) LIMIT 15"
-                )).fetchall()
-                for replay_row in replay_rows:
-                    if not replay_row.source_country or not replay_row.lat:
-                        continue
-                    current_id += 1
-                    class _E:
-                        pass
-                    ev = _E()
-                    ev.ts = replay_row.ts
-                    ev.vector = replay_row.vector
-                    ev.source_ip = replay_row.source_ip
-                    ev.source_country = replay_row.source_country
-                    ev.target_port = replay_row.target_port
-                    ev.lat = replay_row.lat
-                    ev.lon = replay_row.lon
-                    ev.severity_raw = replay_row.severity_raw
-                    ev.count = replay_row.count
-                    ev.source = replay_row.source
-                    yield format_event(ev, current_id)
+                if new_events:
+                    new_events.sort(key=lambda e: e.ts)
+                    for event in new_events:
+                        current_id += 1
+                        yield _format_event(event, current_id)
+                        if event.ts > last_seen_ts:
+                            last_seen_ts = event.ts
+                else:
+                    # Replay random recent events for continuous visual flow
+                    replay = db.query(Event).filter(
+                        Event.source_country.isnot(None), Event.lat.isnot(None)
+                    ).order_by(text('RANDOM()')).limit(5).all()
+                    for ev in replay:
+                        current_id += 1
+                        yield _format_event(ev, current_id)
+            finally:
+                db.close()
 
-            # Send keepalive comment if no events
             now = datetime.now()
             if (now - last_keepalive).total_seconds() > 15:
                 yield ": keepalive\n\n"
                 last_keepalive = now
 
-            # Wait 2 seconds before next poll
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(2)
 
     return StreamingResponse(
         event_generator(),
@@ -411,45 +409,31 @@ async def stream_events(request: Request, db: Session = Depends(get_db)):
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "X-Accel-Buffering": "no",
         }
     )
 
 
 @router.get("/events/ticker-stream")
-async def ticker_stream(request: Request, db: Session = Depends(get_db)):
-    """Slow SSE stream for the ticker — 1 event per second, diverse."""
-    import random as _rng
-
-    vectors_in_db = [v[0] for v in db.query(Event.vector).distinct().all()]
+async def ticker_stream(request: Request):
+    """Slow SSE stream for the ticker — one event per second, diverse."""
+    from ..db import SessionLocal
 
     async def ticker_generator():
         current_id = 0
         while True:
             if await request.is_disconnected():
                 break
-            # Pick one random event per tick
-            vec = _rng.choice(vectors_in_db) if vectors_in_db else "ssh"
-            row = db.execute(text(
-                "SELECT * FROM events TABLESAMPLE BERNOULLI(0.01) LIMIT 1"
-            )).fetchone()
-            if row and row.lat and row.source_country:
+            db = SessionLocal()
+            try:
+                row = db.query(Event).filter(
+                    Event.source_country.isnot(None), Event.lat.isnot(None)
+                ).order_by(text('RANDOM()')).limit(1).first()
+            finally:
+                db.close()
+            if row:
                 current_id += 1
-                event_data = {
-                    "id": current_id,
-                    "ts": row.ts.isoformat() if row.ts else datetime.now(timezone.utc).isoformat(),
-                    "vector": row.vector,
-                    "source_ip": row.source_ip,
-                    "source_country": row.source_country or "XX",
-                    "target_port": row.target_port,
-                    "lat": float(row.lat),
-                    "lon": float(row.lon),
-                    "action": derive_action(row.vector, row.target_port),
-                    "severity": float(row.severity_raw) if row.severity_raw else 0.5,
-                    "count": row.count or 1,
-                    "source": row.source or "unknown",
-                }
-                yield f"id: {current_id}\ndata: {json.dumps(event_data)}\n\n"
+                yield _format_row(row, current_id)
             await asyncio.sleep(0.8)
 
     return StreamingResponse(

@@ -15,6 +15,8 @@ API_KEY = os.getenv("CYBER_WEATHER_API_KEY", "")
 
 # Paths that never require authentication
 PUBLIC_PATHS = {"/healthz", "/", "/docs", "/openapi.json", "/redoc"}
+# SSE streams use browser EventSource which cannot send custom headers
+PUBLIC_PREFIXES = ("/v1/events/stream", "/v1/events/ticker-stream")
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -28,6 +30,9 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if request.url.path in PUBLIC_PATHS:
+            return await call_next(request)
+
+        if any(request.url.path.startswith(p) for p in PUBLIC_PREFIXES):
             return await call_next(request)
 
         # Allow CORS preflight through
