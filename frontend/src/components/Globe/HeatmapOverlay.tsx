@@ -56,7 +56,7 @@ const HeatmapOverlay: React.FC<HeatmapOverlayProps> = ({
       fragmentShader: smoothing ? smoothHeatmapFragmentShader : smoothHeatmapFragmentShader,
       transparent: true,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
+      blending: THREE.NormalBlending,
       side: THREE.FrontSide,
     });
 

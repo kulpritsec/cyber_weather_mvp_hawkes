@@ -13,6 +13,13 @@ class Event(Base):
     count = Column(Integer, default=1)
     source = Column(String, index=True, default="synthetic")
     threat_metadata = Column(Text)  # JSON metadata for threat intelligence
+    source_ip = Column(String)
+    source_asn = Column(String)
+    source_country = Column(String)
+    target_port = Column(Integer)
+    severity_raw = Column(Float)
+    tags = Column(Text)  # JSON
+    raw_ref = Column(String)
 
 Index("ix_events_time_vector", Event.ts, Event.vector)
 # ix_events_source auto-created by index=True on Event.source

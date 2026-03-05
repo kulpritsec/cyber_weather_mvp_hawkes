@@ -1,3 +1,4 @@
+import json
 """
 DShield / SANS Internet Storm Center feed integration
 Primary high-volume CTI feed for port-based attack vectors
@@ -48,7 +49,7 @@ class DShieldIngestor:
 
     async def __aenter__(self):
         timeout = aiohttp.ClientTimeout(total=30)
-        self.http_session = aiohttp.ClientSession(timeout=timeout)
+        self.http_session = aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": "CyberWeatherMVP/1.0 (admin@kulpritstudios.com)"})
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -85,7 +86,7 @@ class DShieldIngestor:
             try:
                 async with self.http_session.get(url) as response:
                     if response.status == 200:
-                        return await response.json()
+                        return await response.json(content_type=None)
                     elif response.status == 429:  # Rate limited
                         wait_time = backoff_factor ** attempt
                         logger.warning(
@@ -126,7 +127,7 @@ class DShieldIngestor:
             return []
 
         # DShield returns {"topips": {"sources": [...]}}
-        sources = data.get("topips", {}).get("sources", [])
+        sources = data if isinstance(data, list) else data.get("topips", {}).get("sources", [])
         logger.info(f"Retrieved {len(sources)} top attacking IPs")
         return sources
 
@@ -140,7 +141,7 @@ class DShieldIngestor:
         Returns:
             List of attack records for that port
         """
-        url = f"{DSHIELD_BASE_URL}/portdetails/{port}/?json"
+        url = f"{DSHIELD_BASE_URL}/port/{port}?json"
         logger.debug(f"Fetching port {port} details from DShield")
 
         data = await self._fetch_with_retry(url)
@@ -209,10 +210,10 @@ class DShieldIngestor:
             source_country=geo_result.country_iso,
             target_port=port,
             severity_raw=severity_raw,
-            tags={
+            tags=json.dumps({
                 "city": geo_result.city_name,
                 "accuracy_radius": geo_result.accuracy_radius,
-            },
+            }),
             raw_ref=f"dshield_{source_ip}_{port}",
         )
 
@@ -239,8 +240,9 @@ class DShieldIngestor:
         tasks.append(self._ingest_top_ips())
 
         # Task 2-N: Get port-specific data for each monitored port
-        for port in PORT_VECTOR_MAP.keys():
-            tasks.append(self._ingest_port(port))
+        # DISABLED - portdetails endpoint does not exist
+        # for port in PORT_VECTOR_MAP.keys():
+            # tasks.append(self._ingest_port(port))
 
         # Run all ingestion tasks concurrently
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -257,39 +259,38 @@ class DShieldIngestor:
         return self.events_inserted
 
     async def _ingest_top_ips(self) -> int:
-        """Ingest top attacking IPs"""
+        """Ingest top attacking IPs — distribute across monitored ports/vectors"""
         sources = await self._fetch_top_ips(limit=100)
         events_added = 0
-
+        # Weight distribution: scanners hit multiple services
+        port_weights = [
+            (22,   "ssh",     0.35),
+            (3389, "rdp",     0.20),
+            (80,   "http",    0.20),
+            (443,  "http",    0.10),
+            (53,   "dns_amp", 0.15),
+        ]
         for source in sources:
-            ip = source.get("ip")
-            attacks = source.get("attacks", 0)
-            port = source.get("targetport", 0)  # DShield may include port
-
-            if not ip:
+            ip = source.get("source", "").strip()
+            attacks = int(source.get("reports", 0))
+            if not ip or attacks < 1:
                 continue
-
-            # Map port to vector
-            vector = self._map_port_to_vector(port) if port else "ssh"  # Default to ssh
-
-            # Normalize and insert
-            event = self._normalize_dshield_event(
-                source_ip=ip,
-                port=port if port else 22,
-                count=attacks,
-                vector=vector,
-                raw_data=source
-            )
-
-            if event:
-                self.session.add(event)
-                events_added += 1
-
+            for port, vector, weight in port_weights:
+                count = max(1, int(attacks * weight))
+                event = self._normalize_dshield_event(
+                    source_ip=ip,
+                    port=port,
+                    count=count,
+                    vector=vector,
+                    raw_data=source
+                )
+                if event:
+                    self.session.add(event)
+                    events_added += 1
         if events_added > 0:
             self.session.commit()
-            logger.info(f"Inserted {events_added} events from top IPs")
+            logger.info(f"Inserted {events_added} events from top IPs (multi-vector)")
             self.events_inserted += events_added
-
         return events_added
 
     async def _ingest_port(self, port: int) -> int:
@@ -303,7 +304,7 @@ class DShieldIngestor:
             return 0
 
         for source in sources:
-            ip = source.get("ip")
+            ip = source.get("source", "").strip()
             reports = source.get("reports", 0)
             count = source.get("count", reports)  # Use count if available, else reports
 

@@ -12,12 +12,13 @@ import logging
 import aiohttp
 import asyncio
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import Session
 
 from ..models import Event
 from ..core.config import get_settings
 from .geolocation import geolocate
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +221,7 @@ class GreyNoiseIngestor:
             source_country=geo_result.country_iso,
             target_port=None,  # GreyNoise doesn't always specify target port
             severity_raw=severity_raw,
-            tags=event_tags,
+            tags=json.dumps(event_tags) if isinstance(event_tags, dict) else event_tags,
             raw_ref=f"greynoise_{ip}",
         )
 
@@ -287,9 +288,10 @@ class GreyNoiseIngestor:
         from ..models import Event as EventModel
 
         recent_events = self.session.query(EventModel.source_ip).distinct().filter(
-            EventModel.ts >= datetime.now(timezone.utc) - timedelta(hours=24),
             EventModel.source != "greynoise"  # Don't re-query our own events
-        ).limit(50).all()  # Limit to 50 to stay within Community rate limits
+        ).filter(
+            EventModel.ts >= datetime.now(timezone.utc) - timedelta(hours=6)
+        ).limit(10).all()  # Limit to 50 to stay within Community rate limits
 
         ips = [e[0] for e in recent_events if e[0]]
         logger.info(f"Enriching {len(ips)} IPs with GreyNoise Community API")
@@ -304,7 +306,7 @@ class GreyNoiseIngestor:
                     events_added += 1
 
             # Rate limiting: 50/day = ~2/minute, so wait 30s between queries
-            await asyncio.sleep(30)
+            await asyncio.sleep(60)
 
         if events_added > 0:
             self.session.commit()
@@ -314,6 +316,11 @@ class GreyNoiseIngestor:
 
 # Public API function matching runbook specification
 async def ingest(session: Session, hours_back: int = 1) -> int:
+    # Skip if no API key to avoid rate-limit spam
+    settings = get_settings()
+    if not settings.greynoise_api_key:
+        logger.info("GreyNoise: skipping (no API key configured)")
+        return 0
     """
     GreyNoise feed ingest entry point (runbook interface)
 

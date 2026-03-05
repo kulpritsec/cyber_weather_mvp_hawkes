@@ -58,7 +58,7 @@ export const heatmapFragmentShader = `
   void main() {
     // Sample intensity from texture
     vec4 texel = texture2D(intensityMap, vUv);
-    float intensity = texel.r / 255.0;
+    float intensity = texel.r;
 
     // Get color based on intensity
     vec3 color = getColorForIntensity(intensity);
@@ -123,7 +123,7 @@ export const forecastFragmentShader = `
   void main() {
     // Sample intensity from texture
     vec4 texel = texture2D(intensityMap, vUv);
-    float intensity = texel.r / 255.0;
+    float intensity = texel.r;
 
     // Get color based on intensity
     vec3 color = getColorForIntensity(intensity);
@@ -193,7 +193,7 @@ export const smoothHeatmapFragmentShader = `
       for (int x = -1; x <= 1; x++) {
         vec2 offset = vec2(float(x), float(y)) * texelSize;
         vec4 sample = texture2D(intensityMap, uv + offset);
-        intensity += (sample.r / 255.0) * kernel[idx];
+        intensity += sample.r * kernel[idx];
         idx++;
       }
     }

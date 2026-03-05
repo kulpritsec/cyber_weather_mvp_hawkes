@@ -15,6 +15,8 @@ class Settings(BaseSettings):
 
     # CTI Feed Configuration
     greynoise_api_key: Optional[str] = None  # GreyNoise Community/Enterprise API key
+    otx_api_key: str = ""  # AlienVault OTX API key
+    abuseipdb_api_key: str = ""  # AbuseIPDB API key
     ingest_interval_min: int = 15  # Minutes between ingest cycles
     fit_interval_min: int = 60  # Minutes between Hawkes fitting cycles
     min_events_fit: int = 50  # Minimum events per cell to attempt fitting

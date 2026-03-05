@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from typing import Optional, AsyncGenerator
 import numpy as np
 import asyncio
@@ -181,13 +182,74 @@ def get_summary(db: Session = Depends(get_db)):
 
 @router.get("/vectors")
 def get_vectors(db: Session = Depends(get_db)):
-    """List active threat vectors from VectorConfig; falls back to seed data."""
+    """List active threat vectors: merges VectorConfig + auto-discovered from events."""
     from ..models import VectorConfig, VECTOR_SEED
+    from sqlalchemy import text
+
+    # Start with seed as baseline
+    seed_map = {v["name"]: v for v in VECTOR_SEED}
+
+    # Override with DB config if populated
     rows = db.query(VectorConfig).filter(VectorConfig.is_active == True).order_by(VectorConfig.sort_order).all()
     if rows:
-        return [{"name": r.name, "display_name": r.display_name, "color_hex": r.color_hex} for r in rows]
-    return [{"name": v["name"], "display_name": v["display_name"], "color_hex": v["color_hex"]} for v in VECTOR_SEED]
+        seed_map = {r.name: {"name": r.name, "display_name": r.display_name, "color_hex": r.color_hex, "sort_order": r.sort_order} for r in rows}
 
+    # Auto-discover vectors from events table not in seed
+    AUTO_COLORS = ["#fbbf24", "#38bdf8", "#fb7185", "#a3e635", "#c084fc", "#f472b6", "#2dd4bf", "#818cf8"]
+    result = db.execute(text("SELECT DISTINCT vector FROM events WHERE vector IS NOT NULL"))
+    discovered = [r[0] for r in result if r[0] not in seed_map]
+    for i, v in enumerate(discovered):
+        seed_map[v] = {
+            "name": v,
+            "display_name": v.replace("_", " ").title(),
+            "color_hex": AUTO_COLORS[i % len(AUTO_COLORS)],
+            "sort_order": 100 + i,
+        }
+
+    # Return sorted
+    vectors = sorted(seed_map.values(), key=lambda x: x.get("sort_order", 99))
+    return [{"name": v["name"], "display_name": v["display_name"], "color_hex": v["color_hex"]} for v in vectors]
+
+
+
+
+# Country centroids for arc visualization
+COUNTRY_CENTROIDS = {
+    "US": (39.8, -98.5), "CN": (35.9, 104.2), "RU": (61.5, 105.3), "DE": (51.2, 10.4),
+    "GB": (55.4, -3.4), "FR": (46.2, 2.2), "JP": (36.2, 138.3), "KR": (35.9, 127.8),
+    "BR": (-14.2, -51.9), "IN": (20.6, 79.0), "NL": (52.1, 5.3), "AU": (-25.3, 133.8),
+    "CA": (56.1, -106.3), "IT": (41.9, 12.6), "SE": (60.1, 18.6), "SG": (1.4, 103.8),
+    "HK": (22.4, 114.1), "UA": (48.4, 31.2), "BG": (42.7, 25.5), "IE": (53.4, -8.2),
+    "PL": (51.9, 19.1), "RO": (45.9, 25.0), "TW": (23.7, 121.0), "VN": (14.1, 108.3),
+    "ID": (-0.8, 113.9), "TH": (15.9, 100.9), "AR": (-38.4, -63.6), "ZA": (-30.6, 22.9),
+}
+
+@router.get("/top-countries")
+def get_top_countries(db: Session = Depends(get_db)):
+    """Top attacking and targeted countries from recent events"""
+    rows = db.execute(text("""
+        SELECT source_country, vector, COUNT(*) as cnt,
+               ROUND(AVG(severity_raw)::numeric, 2) as avg_severity
+        FROM events
+        WHERE ts > NOW() - INTERVAL '24 hours' AND source_country IS NOT NULL
+        GROUP BY source_country, vector
+        ORDER BY cnt DESC
+        LIMIT 100
+    """)).fetchall()
+
+    # Aggregate by country
+    countries = {}
+    for row in rows:
+        cc = row[0]
+        if cc not in countries:
+            lat, lon = COUNTRY_CENTROIDS.get(cc, (0, 0))
+            countries[cc] = {"code": cc, "lat": lat, "lon": lon, "total": 0, "vectors": {}, "avg_severity": 0}
+        countries[cc]["total"] += row[2]
+        countries[cc]["vectors"][row[1]] = row[2]
+        countries[cc]["avg_severity"] = float(row[3]) if row[3] is not None else 0.0
+
+    ranked = sorted(countries.values(), key=lambda x: -x["total"])[:15]
+    return {"countries": ranked, "timestamp": datetime.now(timezone.utc).isoformat()}
 
 @router.get("/events/stream")
 async def stream_events(request: Request, db: Session = Depends(get_db)):
@@ -205,13 +267,24 @@ async def stream_events(request: Request, db: Session = Depends(get_db)):
         action_map = {
             ('ssh', 22): 'SSH Brute Force',
             ('ssh', 23): 'Telnet Brute Force',
+            ('ssh', None): 'SSH Scan',
             ('rdp', 3389): 'RDP Spray Attack',
             ('rdp', 445): 'SMB Enumeration',
+            ('rdp', None): 'RDP Scan',
             ('http', 80): 'HTTP Web Probe',
             ('http', 443): 'HTTPS Web Probe',
+            ('http', 8080): 'HTTP Proxy Scan',
+            ('http', None): 'HTTP Scan',
             ('dns_amp', 53): 'DNS Amplification',
+            ('dns_amp', None): 'DNS Reflection',
+            ('malware', 443): 'Malware C2 Beacon',
+            ('malware', 80): 'Malware Dropper',
+            ('malware', None): 'Malware Activity',
             ('brute_force', None): 'Credential Stuffing',
+            ('botnet_c2', 443): 'Botnet C2 Encrypted',
+            ('botnet_c2', 80): 'Botnet C2 Beacon',
             ('botnet_c2', None): 'Botnet C2 Communication',
+            ('ransomware', 445): 'Ransomware Lateral Movement',
             ('ransomware', None): 'Ransomware Activity',
         }
 
@@ -242,6 +315,7 @@ async def stream_events(request: Request, db: Session = Depends(get_db)):
             'action': derive_action(event.vector, event.target_port),
             'severity': float(event.severity_raw) if event.severity_raw else 0.5,
             'count': event.count or 1,
+            'source': event.source or 'unknown',
         }
 
         return f"id: {event_id}\ndata: {json.dumps(event_data)}\n\n"
@@ -256,13 +330,26 @@ async def stream_events(request: Request, db: Session = Depends(get_db)):
             last_id = 0
 
         # Send initial burst of 50 most recent events
-        recent_events = db.query(Event).order_by(Event.ts.desc()).limit(50).all()
+        # Sample across vectors for diverse ticker — interleave
+        vectors_in_db = [v[0] for v in db.query(Event.vector).distinct().all()]
+        per_vector = max(5, 50 // max(len(vectors_in_db), 1))
+        buckets = {}
+        for vn in vectors_in_db:
+            buckets[vn] = list(reversed(db.query(Event).filter(Event.vector == vn).order_by(Event.ts.desc()).limit(per_vector).all()))
+        # Round-robin interleave
+        recent_events = []
+        max_len = max((len(b) for b in buckets.values()), default=0)
+        for i in range(max_len):
+            for vn in vectors_in_db:
+                if i < len(buckets[vn]):
+                    recent_events.append(buckets[vn][i])
+        recent_events = recent_events[:50]
 
         for idx, event in enumerate(reversed(recent_events), start=last_id + 1):
             yield format_event(event, idx)
 
         current_id = last_id + len(recent_events)
-        last_seen_ts = recent_events[0].ts if recent_events else datetime.now(timezone.utc)
+        last_seen_ts = max(e.ts for e in recent_events) if recent_events else datetime.now(timezone.utc)
         last_keepalive = datetime.now()
 
         # Stream new events as they arrive
@@ -271,16 +358,48 @@ async def stream_events(request: Request, db: Session = Depends(get_db)):
             if await request.is_disconnected():
                 break
 
-            # Poll for new events
-            new_events = db.query(Event).filter(
-                Event.ts > last_seen_ts
-            ).order_by(Event.ts.asc()).limit(100).all()
+            # Poll for new events — interleave across vectors for diverse ticker
+            new_events = []
+            for vec in vectors_in_db:
+                vec_events = db.query(Event).filter(
+                    Event.ts > last_seen_ts,
+                    Event.vector == vec
+                ).order_by(Event.ts.desc()).limit(5).all()
+                new_events.extend(vec_events)
 
             if new_events:
+                # Sort by ts so we advance last_seen_ts correctly
+                new_events.sort(key=lambda e: e.ts)
                 for event in new_events:
                     current_id += 1
                     yield format_event(event, current_id)
-                    last_seen_ts = event.ts
+                    if event.ts > last_seen_ts:
+                        last_seen_ts = event.ts
+            else:
+                # No new events — replay random recent events for continuous visual stream
+                import random as _rng
+                # Fast replay using TABLESAMPLE (0.1s for 15 rows vs 0.8s for offset)
+                replay_rows = db.execute(text(
+                    "SELECT * FROM events TABLESAMPLE BERNOULLI(0.01) LIMIT 15"
+                )).fetchall()
+                for replay_row in replay_rows:
+                    if not replay_row.source_country or not replay_row.lat:
+                        continue
+                    current_id += 1
+                    class _E:
+                        pass
+                    ev = _E()
+                    ev.ts = replay_row.ts
+                    ev.vector = replay_row.vector
+                    ev.source_ip = replay_row.source_ip
+                    ev.source_country = replay_row.source_country
+                    ev.target_port = replay_row.target_port
+                    ev.lat = replay_row.lat
+                    ev.lon = replay_row.lon
+                    ev.severity_raw = replay_row.severity_raw
+                    ev.count = replay_row.count
+                    ev.source = replay_row.source
+                    yield format_event(ev, current_id)
 
             # Send keepalive comment if no events
             now = datetime.now()
@@ -289,7 +408,7 @@ async def stream_events(request: Request, db: Session = Depends(get_db)):
                 last_keepalive = now
 
             # Wait 2 seconds before next poll
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.4)
 
     return StreamingResponse(
         event_generator(),
@@ -299,6 +418,49 @@ async def stream_events(request: Request, db: Session = Depends(get_db)):
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",  # Disable nginx buffering
         }
+    )
+
+
+@router.get("/events/ticker-stream")
+async def ticker_stream(request: Request, db: Session = Depends(get_db)):
+    """Slow SSE stream for the ticker — 1 event per second, diverse."""
+    import random as _rng
+
+    vectors_in_db = [v[0] for v in db.query(Event.vector).distinct().all()]
+
+    async def ticker_generator():
+        current_id = 0
+        while True:
+            if await request.is_disconnected():
+                break
+            # Pick one random event per tick
+            vec = _rng.choice(vectors_in_db) if vectors_in_db else "ssh"
+            row = db.execute(text(
+                "SELECT * FROM events TABLESAMPLE BERNOULLI(0.01) LIMIT 1"
+            )).fetchone()
+            if row and row.lat and row.source_country:
+                current_id += 1
+                event_data = {
+                    "id": current_id,
+                    "ts": row.ts.isoformat() if row.ts else datetime.now(timezone.utc).isoformat(),
+                    "vector": row.vector,
+                    "source_ip": row.source_ip,
+                    "source_country": row.source_country or "XX",
+                    "target_port": row.target_port,
+                    "lat": float(row.lat),
+                    "lon": float(row.lon),
+                    "action": derive_action(row.vector, row.target_port),
+                    "severity": float(row.severity_raw) if row.severity_raw else 0.5,
+                    "count": row.count or 1,
+                    "source": row.source or "unknown",
+                }
+                yield f"id: {current_id}\ndata: {json.dumps(event_data)}\n\n"
+            await asyncio.sleep(0.8)
+
+    return StreamingResponse(
+        ticker_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
 
 # Legacy compatibility endpoints
@@ -335,8 +497,8 @@ def _get_contour_data(vector: str, horizon: int, res: float, levels: int, db: Se
         ).first()
         
         if forecast and forecast.intensity > 0:
-            lats.append(cell.lat_center)
-            lons.append(cell.lon_center)
+            lats.append((cell.lat_min + cell.lat_max) / 2)
+            lons.append((cell.lon_min + cell.lon_max) / 2)
             intensities.append(forecast.intensity)
     
     if len(lats) < 4:  # Need at least 4 points for interpolation
@@ -444,8 +606,8 @@ def get_snapshots(
 
         snapshots[ts].append({
             "cell_id": cell.id,
-            "lat": cell.lat_center,
-            "lon": cell.lon_center,
+            "lat": (cell.lat_min + cell.lat_max) / 2,
+            "lon": (cell.lon_min + cell.lon_max) / 2,
             "vector": hp.vector,
             "mu": hp.mu,
             "beta": hp.beta,
@@ -539,9 +701,12 @@ def get_cell_history(
         grid_id=cell_id
     ).order_by(HawkesParam.updated_at.desc()).first()
 
-    # Count events in last 24 hours
+    # Count events in last 24 hours (using cell lat/lon bounds)
     events_24h = db.query(Event).filter(
-        Event.grid_id == cell_id,
+        Event.lat >= cell.lat_min,
+        Event.lat < cell.lat_max,
+        Event.lon >= cell.lon_min,
+        Event.lon < cell.lon_max,
         Event.ts >= (end_dt - timedelta(hours=24))
     ).count()
 
@@ -564,8 +729,8 @@ def get_cell_history(
 
     return {
         "cell_id": cell_id,
-        "lat": cell.lat_center,
-        "lon": cell.lon_center,
+        "lat": (cell.lat_min + cell.lat_max) / 2,
+        "lon": (cell.lon_min + cell.lon_max) / 2,
         "vector": vector or "all",
         "current_params": {
             "mu": current_params.mu if current_params else 0.0,
@@ -928,4 +1093,393 @@ def get_context_active(db: Session = Depends(get_db)):
         "seasonal_now": seasonal_now,
         "max_context_multiplier": round(max_seasonal * (1 + max_event), 3),
         "data_sources": ["MSRC", "NIST NVD", "MITRE ATT&CK v14.1", "CISA", "STL Seasonal", "Analyst Curated"],
+    }
+
+# ─── FEED STATUS ENDPOINT ───────────────────────────────────────────────
+@router.get("/feeds/status")
+def get_feeds_status(db: Session = Depends(get_db)):
+    """Per-source CTI feed health: total events, last event, 24h count."""
+    from sqlalchemy import func, text
+
+    results = db.execute(text("""
+        SELECT
+            source,
+            COUNT(*) as total_events,
+            MAX(ts) as last_event,
+            ROUND(EXTRACT(EPOCH FROM (NOW() - MAX(ts)))/60) as mins_since_last,
+            SUM(CASE WHEN ts > NOW() - INTERVAL '24 hours' THEN 1 ELSE 0 END) as events_24h,
+            COUNT(DISTINCT vector) as vector_count
+        FROM events
+        GROUP BY source
+        ORDER BY MAX(ts) DESC
+    """)).fetchall()
+
+    sources = {}
+    total_all = 0
+    for row in results:
+        sources[row[0]] = {
+            "total_events": row[1],
+            "last_event": row[2].isoformat() if row[2] else None,
+            "mins_since_last": float(row[3]) if row[3] is not None else None,
+            "events_24h": int(row[4]),
+            "vector_count": row[5],
+        }
+        total_all += row[1]
+
+    # Per-source vector breakdown for last 24h
+    vector_results = db.execute(text("""
+        SELECT source, vector, COUNT(*) as cnt
+        FROM events
+        WHERE ts > NOW() - INTERVAL '24 hours'
+        GROUP BY source, vector
+        ORDER BY cnt DESC
+    """)).fetchall()
+
+    for row in vector_results:
+        src = row[0]
+        if src in sources:
+            if "vectors_24h" not in sources[src]:
+                sources[src]["vectors_24h"] = {}
+            sources[src]["vectors_24h"][row[1]] = row[2]
+
+    return {
+        "sources": sources,
+        "total_events": total_all,
+        "source_count": len(sources),
+    }
+
+
+# ─── Reverse Geocode Endpoint (added by credibility fix) ─────────────────
+@router.get("/geo/reverse")
+def reverse_geocode(
+    lat: float = Query(...),
+    lon: float = Query(...),
+):
+    """Return city/country for a lat/lon using MaxMind GeoLite2."""
+    import geoip2.database
+    import os
+
+    mmdb = os.getenv("GEOIP_DB", "/data/GeoLite2-City.mmdb")
+    if not os.path.exists(mmdb):
+        # Fallback: use country centroids to guess
+        return {"lat": lat, "lon": lon, "city": "Unknown", "country": "Unknown", "country_code": "??"}
+
+    # GeoLite2 is IP-based, not lat/lon-based. For grid cell reverse geocoding,
+    # we'll use a simple country lookup from our stored event data.
+    from sqlalchemy import text
+    from ..db import SessionLocal
+    db = SessionLocal()
+    try:
+        # Find the most common country for events near this lat/lon
+        row = db.execute(text("""
+            SELECT source_country, COUNT(*) as cnt
+            FROM events
+            WHERE source_country IS NOT NULL
+              AND source_country != ''
+              AND lat BETWEEN :lat_min AND :lat_max
+              AND lon BETWEEN :lon_min AND :lon_max
+            GROUP BY source_country
+            ORDER BY cnt DESC
+            LIMIT 1
+        """), {
+            "lat_min": lat - 2.5,
+            "lat_max": lat + 2.5,
+            "lon_min": lon - 2.5,
+            "lon_max": lon + 2.5,
+        }).fetchone()
+
+        country_code = row.source_country if row else "??"
+
+        # Also check Shodan exposures for richer location data
+        shodan_row = db.execute(text("""
+            SELECT city, country_code, org
+            FROM exposures
+            WHERE lat BETWEEN :lat_min AND :lat_max
+              AND lon BETWEEN :lon_min AND :lon_max
+            ORDER BY fetched_at DESC
+            LIMIT 1
+        """), {
+            "lat_min": lat - 1.5,
+            "lat_max": lat + 1.5,
+            "lon_min": lon - 1.5,
+            "lon_max": lon + 1.5,
+        }).fetchone()
+
+        city = shodan_row.city if shodan_row and shodan_row.city else "Unknown"
+        if shodan_row and shodan_row.country_code:
+            country_code = shodan_row.country_code
+
+        return {
+            "lat": lat,
+            "lon": lon,
+            "city": city,
+            "country_code": country_code,
+            "org": shodan_row.org if shodan_row else None,
+        }
+    finally:
+        db.close()
+
+
+# ─── Top Attack Flows (added by real arc targeting fix) ───────────────────
+@router.get("/flows/top")
+def get_top_flows(
+    hours: int = Query(default=24),
+    limit: int = Query(default=50),
+    db: Session = Depends(get_db),
+):
+    """
+    Return top source_country → vector attack flows from recent events.
+    Used by the globe to draw real attack arcs.
+    """
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    rows = db.execute(text("""
+        SELECT source_country, vector, event_count, avg_lat, avg_lon, unique_ips, top_port
+        FROM (
+            SELECT source_country, vector, COUNT(*) as event_count,
+                   ROUND(AVG(lat)::numeric, 2) as avg_lat,
+                   ROUND(AVG(lon)::numeric, 2) as avg_lon,
+                   COUNT(DISTINCT source_ip) as unique_ips,
+                   MODE() WITHIN GROUP (ORDER BY target_port) as top_port,
+                   ROW_NUMBER() OVER (PARTITION BY source_country ORDER BY COUNT(*) DESC) as rn
+            FROM events
+            WHERE source_country IS NOT NULL
+              AND source_country != ''
+              AND ts >= :cutoff
+            GROUP BY source_country, vector
+            HAVING COUNT(*) >= 3
+        ) ranked
+        WHERE rn <= 2
+        ORDER BY event_count DESC
+        LIMIT :limit
+    """), {"cutoff": cutoff, "limit": limit}).fetchall()
+
+    flows = []
+    for r in rows:
+        flows.append({
+            "source_country": r.source_country,
+            "vector": r.vector,
+            "event_count": r.event_count,
+            "avg_lat": float(r.avg_lat) if r.avg_lat else 0,
+            "avg_lon": float(r.avg_lon) if r.avg_lon else 0,
+            "unique_ips": r.unique_ips,
+            "top_port": r.top_port,
+        })
+
+    return {"hours": hours, "flows": flows}
+
+
+# ─── Forecast Time Series (for Context Engine panel) ─────────────────────
+@router.get("/forecast/series")
+def get_forecast_series(
+    vector: str = Query(default="ssh"),
+    days: int = Query(default=30),
+    db: Session = Depends(get_db),
+):
+    """
+    Return historical intensity + forward forecast for a vector.
+    Used by Context Engine panel's forecast chart.
+    """
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+
+    # Historical: hourly intensity from nowcast snapshots
+    history_cutoff = now - timedelta(days=days)
+    hist_rows = db.execute(text("""
+        SELECT date_trunc('hour', ts) as hour, COUNT(*) as events,
+               AVG(severity_raw) as avg_severity
+        FROM events
+        WHERE vector = :vector AND ts >= :cutoff
+        GROUP BY date_trunc('hour', ts)
+        ORDER BY hour ASC
+    """), {"vector": vector, "cutoff": history_cutoff}).fetchall()
+
+    history = []
+    for r in hist_rows:
+        history.append({
+            "t": int(r.hour.timestamp() * 1000) if r.hour else 0,
+            "value": float(r.events),
+            "severity": float(r.avg_severity) if r.avg_severity else 0,
+            "isForecast": False,
+        })
+
+    # Forward forecast: use Hawkes params to project
+    # Get current median params for this vector
+    params_row = db.execute(text("""
+        SELECT
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY mu) as med_mu,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY n_br) as med_nbr,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY beta) as med_beta,
+            COUNT(*) as cell_count
+        FROM hawkes_params
+        WHERE vector = :vector
+    """), {"vector": vector}).fetchone()
+
+    mu = float(params_row.med_mu) if params_row and params_row.med_mu else 0.1
+    n_br = float(params_row.med_nbr) if params_row and params_row.med_nbr else 0.5
+    cell_count = params_row.cell_count if params_row else 0
+
+    # Get recent baseline (last 24h average hourly events)
+    baseline_row = db.execute(text("""
+        SELECT COUNT(*) / GREATEST(1, EXTRACT(EPOCH FROM (MAX(ts) - MIN(ts))) / 3600) as avg_hourly
+        FROM events
+        WHERE vector = :vector AND ts >= :cutoff24
+    """), {"vector": vector, "cutoff24": now - timedelta(hours=24)}).fetchone()
+
+    base_rate = float(baseline_row.avg_hourly) if baseline_row and baseline_row.avg_hourly else 10
+
+    # Project forward using Hawkes steady-state: E[λ] = μ / (1 - n_br)
+    # With uncertainty growing over time
+    forecast = []
+    steady_state = mu / max(0.01, 1 - min(n_br, 0.99)) * cell_count
+    for h in range(1, days * 24 + 1):
+        t = int((now + timedelta(hours=h)).timestamp() * 1000)
+        # Blend baseline with steady-state forecast
+        blend = min(h / (7 * 24), 1.0)  # transition over 7 days
+        value = base_rate * (1 - blend) + steady_state * blend
+        # Growing uncertainty
+        uncertainty = 0.1 + (h / (days * 24)) * 0.4
+        forecast.append({
+            "t": t,
+            "value": round(value, 2),
+            "lower": round(value * (1 - uncertainty * 1.65), 2),
+            "upper": round(value * (1 + uncertainty * 1.65), 2),
+            "isForecast": True,
+        })
+
+    return {
+        "vector": vector,
+        "history": history,
+        "forecast": forecast,
+        "params": {
+            "mu": round(mu, 6),
+            "n_br": round(n_br, 4),
+            "cell_count": cell_count,
+            "base_rate_hourly": round(base_rate, 1),
+            "steady_state": round(steady_state, 2),
+        },
+    }
+
+
+# ─── Network Flow Data (for Network Flow Mathematics panel) ──────────────
+@router.get("/network/flows")
+def get_network_flows(
+    hours: int = Query(default=24),
+    db: Session = Depends(get_db),
+):
+    """
+    Return aggregated network flow data from real events.
+    Used by Network Flow Mathematics panel.
+    """
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    # Traffic by vector
+    vector_rows = db.execute(text("""
+        SELECT vector, COUNT(*) as events,
+               COUNT(DISTINCT source_ip) as unique_ips,
+               COUNT(DISTINCT source_country) as countries,
+               COUNT(DISTINCT target_port) as unique_ports
+        FROM events
+        WHERE ts >= :cutoff
+        GROUP BY vector
+        ORDER BY events DESC
+    """), {"cutoff": cutoff}).fetchall()
+
+    # Top source IPs
+    ip_rows = db.execute(text("""
+        SELECT source_ip, source_country, vector, COUNT(*) as events,
+               COUNT(DISTINCT target_port) as ports_targeted
+        FROM events
+        WHERE ts >= :cutoff AND source_ip IS NOT NULL
+        GROUP BY source_ip, source_country, vector
+        ORDER BY events DESC
+        LIMIT 20
+    """), {"cutoff": cutoff}).fetchall()
+
+    # Top target ports
+    port_rows = db.execute(text("""
+        SELECT target_port, vector, COUNT(*) as events,
+               COUNT(DISTINCT source_ip) as source_ips
+        FROM events
+        WHERE ts >= :cutoff AND target_port IS NOT NULL
+        GROUP BY target_port, vector
+        ORDER BY events DESC
+        LIMIT 15
+    """), {"cutoff": cutoff}).fetchall()
+
+    # Hourly timeline
+    timeline_rows = db.execute(text("""
+        SELECT date_trunc('hour', ts) as hour, vector, COUNT(*) as events
+        FROM events
+        WHERE ts >= :cutoff
+        GROUP BY date_trunc('hour', ts), vector
+        ORDER BY hour ASC
+    """), {"cutoff": cutoff}).fetchall()
+
+    # Country breakdown
+    country_rows = db.execute(text("""
+        SELECT source_country, COUNT(*) as events,
+               COUNT(DISTINCT source_ip) as unique_ips,
+               COUNT(DISTINCT vector) as vectors
+        FROM events
+        WHERE ts >= :cutoff AND source_country IS NOT NULL AND source_country != ''
+        GROUP BY source_country
+        ORDER BY events DESC
+        LIMIT 20
+    """), {"cutoff": cutoff}).fetchall()
+
+    # Build timeline series grouped by vector
+    timeline = {}
+    for r in timeline_rows:
+        vec = r.vector
+        if vec not in timeline:
+            timeline[vec] = []
+        timeline[vec].append({
+            "t": int(r.hour.timestamp() * 1000) if r.hour else 0,
+            "events": r.events,
+        })
+
+    return {
+        "hours": hours,
+        "vectors": [
+            {
+                "name": r.vector,
+                "events": r.events,
+                "unique_ips": r.unique_ips,
+                "countries": r.countries,
+                "unique_ports": r.unique_ports,
+            }
+            for r in vector_rows
+        ],
+        "top_sources": [
+            {
+                "ip": r.source_ip,
+                "country": r.source_country,
+                "vector": r.vector,
+                "events": r.events,
+                "ports_targeted": r.ports_targeted,
+            }
+            for r in ip_rows
+        ],
+        "top_ports": [
+            {
+                "port": r.target_port,
+                "vector": r.vector,
+                "events": r.events,
+                "source_ips": r.source_ips,
+            }
+            for r in port_rows
+        ],
+        "timeline": timeline,
+        "top_countries": [
+            {
+                "country": r.source_country,
+                "events": r.events,
+                "unique_ips": r.unique_ips,
+                "vectors": r.vectors,
+            }
+            for r in country_rows
+        ],
     }

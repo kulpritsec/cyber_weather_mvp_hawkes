@@ -59,7 +59,7 @@ const ArcATTACKTab: React.FC<ArcATTACKTabProps> = ({ arc }) => {
             ))
           ) : (
             <div className="no-techniques">
-              No MITRE ATT&CK techniques mapped for {vector.toUpperCase()} vector.
+              No MITRE ATT&CK techniques mapped for {vector?.toUpperCase() || "UNKNOWN"} vector.
             </div>
           )}
         </div>
@@ -91,7 +91,7 @@ const ArcATTACKTab: React.FC<ArcATTACKTabProps> = ({ arc }) => {
                 <div className="group-detail-item">
                   <span className="detail-label">Known vectors:</span>
                   <span className="detail-value">
-                    {threatGroup.knownVectors.map((v) => v.toUpperCase()).join(', ')}
+                    {threatGroup.knownVectors.map((v) => v?.toUpperCase() || "UNKNOWN").join(', ')}
                   </span>
                 </div>
               </div>

@@ -19,7 +19,7 @@ class HawkesParams:
 def _expand_times(times: List[float], counts: List[int]) -> np.ndarray:
     expanded = []
     for t, c in zip(times, counts):
-        expanded.extend([t] * int(max(1, c)))
+        expanded.extend([t] * int(min(max(1, c), 10)))
     return np.array(expanded, dtype=float)
 
 def _nll(theta: np.ndarray, t: np.ndarray, T: float) -> float:
@@ -82,7 +82,7 @@ def fit_hawkes_exponential(times: List[float], counts: List[int], T: float, boot
     except (OverflowError, ValueError):
         return HawkesParams(mu=max(rate*0.5,1e-4), beta=1.0, n_br=0.3)
         
-    n_br = min(0.95, max(1e-3, n_br)); beta = max(1e-3, beta); mu = max(1e-6, mu)
+    n_br = min(0.999, max(1e-3, n_br)); beta = max(1e-3, beta); mu = max(1e-6, mu)
     
     # Bootstrap for uncertainty estimation
     mu_std, beta_std, n_br_std = 0.0, 0.0, 0.0
@@ -100,7 +100,7 @@ def fit_hawkes_exponential(times: List[float], counts: List[int], T: float, boot
                     boot_mu = math.exp(boot_log_mu)
                     boot_beta = math.exp(boot_log_beta)
                     boot_n_br = 1/(1+math.exp(-boot_gamma))
-                    boot_n_br = min(0.95, max(1e-3, boot_n_br))
+                    boot_n_br = min(0.999, max(1e-3, boot_n_br))
                     boot_beta = max(1e-3, boot_beta)
                     boot_mu = max(1e-6, boot_mu)
                     bootstrap_params.append((boot_mu, boot_beta, boot_n_br))

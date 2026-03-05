@@ -50,7 +50,7 @@ const HotspotCellPanel: React.FC<HotspotCellPanelProps> = ({ cell, position, onC
   };
 
   const getSeverityLabel = (severity: string): string => {
-    return severity.toUpperCase();
+    return severity?.toUpperCase() || "UNKNOWN";
   };
 
   const getStabilityStatus = (nBr: number): { label: string; trend: string; trendIcon: string } => {
@@ -102,7 +102,7 @@ const HotspotCellPanel: React.FC<HotspotCellPanelProps> = ({ cell, position, onC
           <span className="cell-icon">🔥</span>
           <span className="cell-id">Grid Cell #{cell.cellId}</span>
           <span className="cell-vector-badge" data-vector={cell.vector}>
-            {cell.vector.toUpperCase()}
+            {cell.vector?.toUpperCase() || "UNKNOWN"}
           </span>
         </div>
         <button className="cell-panel-close-button" onClick={onClose} aria-label="Close panel">
@@ -133,19 +133,19 @@ const HotspotCellPanel: React.FC<HotspotCellPanelProps> = ({ cell, position, onC
         <div className="cell-metrics-grid">
           <div className="cell-metric-item">
             <div className="cell-metric-label">μ (Base Rate)</div>
-            <div className="cell-metric-value">{cell.hawkesParams.mu.toFixed(3)}</div>
+            <div className="cell-metric-value">{(cell.hawkesParams?.mu ?? 0).toFixed(3)}</div>
           </div>
           <div className="cell-metric-item">
             <div className="cell-metric-label">β (Decay)</div>
-            <div className="cell-metric-value">{cell.hawkesParams.beta.toFixed(3)}</div>
+            <div className="cell-metric-value">{(cell.hawkesParams?.beta ?? 0).toFixed(3)}</div>
           </div>
           <div className="cell-metric-item cell-metric-highlight">
             <div className="cell-metric-label">n̂ (Branching)</div>
-            <div className="cell-metric-value">{cell.hawkesParams.nBr.toFixed(3)}</div>
+            <div className="cell-metric-value">{(cell.hawkesParams?.nBr ?? 0).toFixed(3)}</div>
           </div>
           <div className="cell-metric-item">
             <div className="cell-metric-label">24h Events</div>
-            <div className="cell-metric-value">{cell.eventCount24h.toLocaleString()}</div>
+            <div className="cell-metric-value">{(cell.eventCount24h ?? 0).toLocaleString()}</div>
           </div>
         </div>
       </div>
@@ -164,7 +164,7 @@ const HotspotCellPanel: React.FC<HotspotCellPanelProps> = ({ cell, position, onC
                 borderColor: `${severityColor}66`,
               }}
             >
-              {getSeverityLabel(cell.severity)} (n̂ = {cell.hawkesParams.nBr.toFixed(3)})
+              {getSeverityLabel(cell.severity || "clear")} (n̂ = {(cell.hawkesParams?.nBr ?? 0).toFixed(3)})
             </span>
           </div>
           <div className="severity-row">

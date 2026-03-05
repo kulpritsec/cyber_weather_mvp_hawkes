@@ -265,7 +265,7 @@ function runSimulation(params: SimulationParams): SimResults {
   const results: SimResults = {};
 
   vectors.forEach(vec => {
-    const hp = hawkesParams[vec] || { mu: 2.0, alpha: 1.5, beta: 2.5 };
+    const hp = hawkesParams[vec] || realParams[vec] || { mu: 2.0, alpha: 1.5, beta: 2.5 };
     const geoMult = geoMultipliers[vec] || 1.0;
     const scExposure = supplyChainExposure[vec] || 0;
     const dailyForecasts: ForecastDayData[] = [];
@@ -375,7 +375,7 @@ function AttackGraph({ observedTechniques, onToggleTechnique, width = 660, heigh
             stroke={phase.color} strokeWidth={0.5} opacity={0.15} />
           <text x={phaseX[phase.id]} y={18} fill={phase.color} fontSize="7" fontFamily={MONO}
             textAnchor="middle" letterSpacing="0.05em" opacity={0.7}>
-            {phase.label.toUpperCase()}
+            {phase.label?.toUpperCase() || "UNKNOWN"}
           </text>
         </g>
       ))}
@@ -488,7 +488,7 @@ function SupplyChainMap({ selectedVendor, onSelectVendor }: SupplyChainMapProps)
               <div style={{ marginTop: "8px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "6px" }}>
                 {[
                   { k: "Type", v: entity.type.replace("_", " ") },
-                  { k: "Criticality", v: entity.criticality.toUpperCase() },
+                  { k: "Criticality", v: entity.criticality?.toUpperCase() || "UNKNOWN" },
                   { k: "Sector", v: entity.sector },
                 ].map((item, j) => (
                   <div key={j}>
@@ -537,7 +537,7 @@ function GeopoliticalPanel() {
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <span style={{ fontSize: "12px", fontWeight: 800, color: C.bright }}>{actor.country}</span>
                 <span style={{ fontSize: "9px", color: barColor, fontFamily: MONO, fontWeight: 600 }}>
-                  {actor.trend.toUpperCase()}
+                  {actor.trend?.toUpperCase() || "UNKNOWN"}
                 </span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
@@ -689,6 +689,34 @@ interface PredictiveThreatIntelPanelProps {
 
 export default function PredictiveThreatIntelPanel({ onClose }: PredictiveThreatIntelPanelProps) {
   const [activeTab, setActiveTab] = useState("attack_graph");
+
+  // Fetch real Hawkes params from pipeline
+  const [realParams, setRealParams] = useState<{[v: string]: {mu: number; alpha: number; beta: number}}>({});
+  useEffect(() => {
+    async function loadParams() {
+      const vecs = ["ssh", "rdp", "http", "dns_amp", "botnet_c2", "ransomware"];
+      const params: {[v: string]: {mu: number; alpha: number; beta: number}} = {};
+      for (const v of vecs) {
+        try {
+          const r = await fetch(`/v1/data?mode=params&vector=${v}&res=2.5`);
+          const data = await r.json();
+          const feats = data.features || [];
+          if (feats.length > 0) {
+            const mus = feats.map((f: any) => f.properties.mu).sort((a: number, b: number) => a - b);
+            const betas = feats.map((f: any) => f.properties.beta).sort((a: number, b: number) => a - b);
+            const nbrs = feats.map((f: any) => f.properties.n_br).sort((a: number, b: number) => a - b);
+            const med = (arr: number[]) => arr[Math.floor(arr.length / 2)];
+            const mu = med(mus);
+            const beta = Math.min(med(betas), 5.0);
+            const alpha = med(nbrs) * beta;
+            params[v] = { mu: Math.min(mu, 2.0), alpha, beta };
+          }
+        } catch {}
+      }
+      setRealParams(params);
+    }
+    loadParams();
+  }, []);
   const [observedTechniques, setObservedTechniques] = useState(["T1566", "T1204", "T1059"]);
   const [selectedVendor, setSelectedVendor] = useState<string | null>(null);
   const [simVector, setSimVector] = useState("ssh");
@@ -992,7 +1020,7 @@ export default function PredictiveThreatIntelPanel({ onClose }: PredictiveThreat
                 {simResults && (
                   <div style={{ ...panelStyle, padding: "14px", marginBottom: "10px" }}>
                     <div style={headerStyle}>
-                      FORECAST: {simVector.toUpperCase()} — {simDays}-DAY HORIZON
+                      FORECAST: {simVector?.toUpperCase() || "UNKNOWN"} — {simDays}-DAY HORIZON
                       <span style={{ marginLeft: "6px", fontSize: "8px", color: C.accent }}>{simCount.toLocaleString()} simulations</span>
                     </div>
                     <ForecastChart simResults={simResults} vector={simVector} width={620} height={240} />

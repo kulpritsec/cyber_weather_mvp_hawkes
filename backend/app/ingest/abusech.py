@@ -1,3 +1,4 @@
+import os
 """
 Abuse.ch Feeds Integration (ThreatFox, Feodo Tracker, URLhaus)
 Malware + botnet C2 + ransomware intelligence
@@ -19,6 +20,7 @@ from io import StringIO
 
 from ..models import Event
 from .geolocation import geolocate
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +100,7 @@ class AbusechIngestor:
         }
 
         try:
-            async with self.http_session.post(url, json=payload) as response:
+            async with self.http_session.post(url, json=payload, headers={"Auth-Key": os.environ.get("CYBER_WEATHER_ABUSECH_AUTH_KEY", "")}) as response:
                 if response.status == 200:
                     data = await response.json()
                     if data.get("query_status") == "ok":
@@ -243,13 +245,13 @@ class AbusechIngestor:
             source_country=geo_result.country_iso,
             target_port=None,
             severity_raw=severity_raw,
-            tags={
+            tags=json.dumps({
                 "malware_family": malware_family,
                 "malware_alias": malware_alias,
                 "threat_type": threat_type,
                 "ioc_type": ioc_type,
                 "confidence_level": confidence,
-            },
+            }),
             raw_ref=f"threatfox_{ioc.get('id')}",
         )
 
@@ -295,11 +297,11 @@ class AbusechIngestor:
             source_country=geo_result.country_iso,
             target_port=int(port) if port and port.isdigit() else None,
             severity_raw=0.9,  # High severity for confirmed C2
-            tags={
+            tags=json.dumps({
                 "malware_family": malware,
                 "c2_server": True,
                 "feed": "feodo_tracker",
-            },
+            }),
             raw_ref=f"feodo_{ip}_{port}",
         )
 

@@ -29,7 +29,7 @@ def recompute_all_nowcasts(session: Session) -> dict:
     events_processed = 0
     for ev in q:
         lat_idx, lon_idx = latlon_to_cell_indices(ev.lat, ev.lon, GRID_RES_DEG)
-        agg[(lat_idx, lon_idx, ev.vector)] += int(max(1, ev.count))
+        agg[(lat_idx, lon_idx, ev.vector)] += min(int(max(1, ev.count)), 10)
         events_processed += 1
 
     cells_updated = 0

@@ -7,6 +7,11 @@ from .routers.nowcast import router as nowcast_router
 from .routers.forecast import router as forecast_router
 from .routers.advisory import router as advisory_router
 from .routers.params import router as params_router
+from app.routers.vuln_router import router as vuln_router
+from app.routers.ioc_enrichment import router as ioc_router
+from app.routers.ttp_heatmap import router as ttp_router
+from .routers.shodan_router import router as shodan_router
+from .routers.podcast_feeds import router as podcast_router
 from .services.pipeline import start_scheduler, stop_scheduler
 
 @asynccontextmanager
@@ -49,9 +54,14 @@ def root():
 
 # Include the unified router first (for the new /v1/data endpoint)
 app.include_router(unified_router)
+app.include_router(ioc_router)
 
 # Keep legacy endpoints for backward compatibility
 app.include_router(nowcast_router)
 app.include_router(forecast_router)
 app.include_router(advisory_router)
 app.include_router(params_router)
+app.include_router(vuln_router)
+app.include_router(ttp_router)
+app.include_router(shodan_router)
+app.include_router(podcast_router)

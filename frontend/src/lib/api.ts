@@ -1,4 +1,4 @@
-const BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+const BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
 
 // Unified API endpoint
 export async function fetchCyberData(mode: string, vector: string, horizon?: number, res: number = 2.5, levels?: number) {

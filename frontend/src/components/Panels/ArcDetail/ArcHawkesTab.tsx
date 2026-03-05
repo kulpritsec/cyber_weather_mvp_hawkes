@@ -91,7 +91,7 @@ const ArcHawkesTab: React.FC<ArcHawkesTabProps> = ({ arc }) => {
         <p className="stability-summary">
           <strong>Stability Status:</strong>{' '}
           <span className={getStabilityClass(stability)}>
-            {stability.toUpperCase()}
+            {stability?.toUpperCase() || "UNKNOWN"}
           </span>
         </p>
       </>

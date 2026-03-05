@@ -151,7 +151,7 @@ export function latLonToGridCell(
  */
 export async function buildArcDataFromEvents(
   arcId: string,
-  apiBaseUrl: string = '/api/v1'
+  apiBaseUrl: string = '/v1'
 ): Promise<ArcData | null> {
   try {
     // Future: Call /v1/arcs/{id} endpoint
@@ -174,7 +174,7 @@ export async function fetchCellHistory(
   cellId: number,
   vector?: string,
   hours: number = 48,
-  apiBaseUrl: string = '/api/v1'
+  apiBaseUrl: string = '/v1'
 ): Promise<HotspotCellData | null> {
   try {
     const params = new URLSearchParams({

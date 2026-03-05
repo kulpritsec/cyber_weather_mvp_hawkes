@@ -116,7 +116,7 @@ const ArcDetailPanel: React.FC<ArcDetailPanelProps> = ({ arc, position, onClose 
         <div className="panel-title">
           <span className="arc-icon">⚡</span>
           <span className="arc-vector-badge" data-vector={arc.vector}>
-            {arc.vector.toUpperCase()}
+            {arc.vector?.toUpperCase() || "UNKNOWN"}
           </span>
           <span className="arc-id">Arc #{arc.id}</span>
         </div>

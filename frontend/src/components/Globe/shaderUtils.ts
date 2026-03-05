@@ -69,18 +69,22 @@ export function createIntensityDataTexture(
     data[idx + 3] = 0; // A (transparent)
   }
 
+  // Compute max for normalization
+  const maxIntensity = Math.max(1, ...cellData.map(c => c.intensity));
+
   // Fill with cell data
   cellData.forEach((cell) => {
     const { row, col } = latLonToGridIndex(cell.lat, cell.lon);
     const idx = (row * width + col) * 4;
 
-    // Normalize intensity to 0-255
-    const normalizedIntensity = Math.min(255, Math.floor(cell.intensity * 25.5));
+    // Normalize intensity relative to dataset max
+    const rawNorm = cell.intensity / maxIntensity;
+    const normalizedIntensity = rawNorm < 0.05 ? 0 : Math.min(255, Math.floor(rawNorm * 255));
 
     data[idx] = normalizedIntensity;     // R channel = intensity
     data[idx + 1] = normalizedIntensity; // G channel = intensity
     data[idx + 2] = normalizedIntensity; // B channel = intensity
-    data[idx + 3] = normalizedIntensity > 0 ? 255 : 0; // A channel = opacity
+    data[idx + 3] = normalizedIntensity; // A channel = opacity
   });
 
   const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat);

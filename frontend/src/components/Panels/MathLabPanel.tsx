@@ -141,6 +141,32 @@ const MathLabPanel: React.FC<MathLabPanelProps> = ({ onClose }) => {
 
   // ── React state (display only) ────────────────────────────────────────────
   const [params, setParams] = useState({ mu_base: 0.12, alpha: 0.8, beta: 1.5 });
+
+  // Fetch real Hawkes params from pipeline on mount
+  useEffect(() => {
+    fetch("/v1/params?vector=ssh&res=2.5")
+      .then(r => r.json())
+      .then(data => {
+        const feats = data.features || [];
+        if (feats.length > 0) {
+          // Use median cell params for representative values
+          const mus = feats.map((f: any) => f.properties.mu).sort((a: number, b: number) => a - b);
+          const betas = feats.map((f: any) => f.properties.beta).sort((a: number, b: number) => a - b);
+          const nbrs = feats.map((f: any) => f.properties.n_br).sort((a: number, b: number) => a - b);
+          const median = (arr: number[]) => arr[Math.floor(arr.length / 2)];
+          const mu = median(mus);
+          const beta = median(betas);
+          const n_br = median(nbrs);
+          // Math Lab uses alpha where n_br = alpha / beta, so alpha = n_br * beta
+          // But beta here is very large (~148), scale to simulation range
+          const simBeta = Math.min(beta, 5.0); // cap for visual sim
+          const simAlpha = n_br * simBeta;
+          setParams({ mu_base: Math.min(mu, 1.0), alpha: simAlpha, beta: simBeta });
+          setBranchingRatio(n_br);
+        }
+      })
+      .catch(() => {}); // keep defaults on error
+  }, []);
   const [covariates, setCovariates] = useState({ s_t: 1.0, e_t: 1.0, c_t: 1.0 });
   const [currentLambda, setCurrentLambda] = useState<number>(0.12);
   const [branchingRatio, setBranchingRatio] = useState<number>(0.533);

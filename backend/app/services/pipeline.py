@@ -25,6 +25,9 @@ from ..db import SessionLocal
 from ..core.config import get_settings
 from ..models import Event, HawkesParam, Advisory, ForecastSnapshot, VectorConfig
 from ..ingest import dshield, greynoise, abusech
+from ..ingest import otx
+from ..ingest import abuseipdb
+from ..ingest.shodan_exposure import run_shodan_ingest
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +85,26 @@ async def run_ingest_cycle() -> Dict[str, Any]:
             tasks.append(("greynoise", greynoise.ingest(session, hours_back=1)))
         else:
             logger.info("GreyNoise API key not configured, skipping")
+
+        # Add OTX if API key is configured
+        if getattr(settings, "otx_api_key", "") and settings.otx_api_key:
+            tasks.append(("otx", otx.ingest(session, hours_back=24)))
+        else:
+            logger.info("OTX API key not configured, skipping")
+
+        # Add AbuseIPDB if API key is configured
+        if getattr(settings, "abuseipdb_api_key", "") and settings.abuseipdb_api_key:
+            tasks.append(("abuseipdb", abuseipdb.ingest(session, hours_back=24)))
+        else:
+            logger.info("AbuseIPDB API key not configured, skipping")
+
+        # Shodan exposure intelligence
+        try:
+            shodan_result = await run_shodan_ingest(session)
+            results["feeds"]["shodan"] = shodan_result
+        except Exception as e:
+            logger.error(f"Shodan ingest failed: {e}")
+            results["feeds"]["shodan"] = {"status": "error", "error": str(e)}
 
         # Execute all feeds in parallel
         feed_results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
@@ -378,6 +401,7 @@ def start_scheduler():
         id="ingest_cycle",
         name="CTI Feed Ingest Cycle",
         replace_existing=True,
+        next_run_time=datetime.now(),
     )
 
     # Schedule fitting cycle (every N minutes)
@@ -387,6 +411,7 @@ def start_scheduler():
         id="fitting_cycle",
         name="Hawkes Fitting Cycle",
         replace_existing=True,
+        next_run_time=datetime.now(),
     )
 
     # Schedule advisory cycle (every N minutes, offset by 5 min after fitting)
@@ -396,6 +421,7 @@ def start_scheduler():
         id="advisory_cycle",
         name="Advisory Generation Cycle",
         replace_existing=True,
+        next_run_time=datetime.now(),
     )
 
     # Add event listeners

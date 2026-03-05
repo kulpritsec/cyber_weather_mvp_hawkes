@@ -486,7 +486,7 @@ function EventCalendarTab({ events, dataSources }: { events?: LiveEvent[]; dataS
                 <div>
                   <div style={{ fontFamily: C.mono, fontSize: '9px', color: C.muted, letterSpacing: '0.1em', marginBottom: '2px' }}>REGION</div>
                   <div style={{ fontFamily: C.mono, fontSize: '10px', color: C.text }}>
-                    {ev.region.replace('_', ' ').toUpperCase()}
+                    {ev.region.replace('_', ' ')?.toUpperCase() || "UNKNOWN"}
                   </div>
                 </div>
                 <div>
@@ -668,7 +668,7 @@ function CampaignRecurrenceTab({ groups, dataSources }: { groups?: LiveCampaignG
         background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.3)',
       }}>
         <div style={{ fontFamily: C.mono, fontSize: '9px', color: '#6366f1', letterSpacing: '0.1em', marginBottom: '6px' }}>
-          ◈ CAMPAIGN PRIOR C(t) — {MONTHS[currentMonth].toUpperCase()} 2026
+          ◈ CAMPAIGN PRIOR C(t) — {MONTHS[currentMonth]?.toUpperCase() || "UNKNOWN"} 2026
         </div>
         <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
           {sorted.filter(g => g.monthlyIntensity[currentMonth] >= 1.0).map(g => (
