@@ -650,33 +650,20 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
       if (!srcCoords) continue;
       const [srcLat, srcLon] = srcCoords;
 
-      // Target: find highest-intensity hotspot for this vector that's far from source
-      const vectorHotspots = hotspots
-        .filter(h => h.vector === flow.vector || flow.vector === "malware" || flow.vector === "botnet_c2")
-        .sort((a, b) => b.intensity - a.intensity);
-      
-      // Pick a target: prefer geographically distant hotspot, but accept closer ones too
-      let tgt: { lat: number; lon: number; name: string } | null = null;
-      for (const h of vectorHotspots) {
+      // Target: randomly pick from distant hotspots (not always the top one)
+      const distantHotspots = hotspots.filter(h => {
         const dLat = Math.abs(srcLat - h.lat);
         const dLon = Math.abs(srcLon - h.lon);
-        if (dLat > 5 || dLon > 8) {
-          tgt = { lat: h.lat, lon: h.lon, name: h.name };
-          break;
-        }
+        return (dLat > 5 || dLon > 8);
+      });
+
+      let tgt: { lat: number; lon: number; name: string } | null = null;
+      if (distantHotspots.length > 0) {
+        // Randomly pick from eligible distant hotspots (weighted slightly toward higher intensity)
+        const pick = distantHotspots[Math.floor(Math.random() * Math.min(distantHotspots.length, 8))];
+        tgt = { lat: pick.lat, lon: pick.lon, name: pick.name };
       }
-      // Fallback: pick any hotspot or a random global city
-      if (!tgt) {
-        for (const h of hotspots) {
-          const dLat = Math.abs(srcLat - h.lat);
-          const dLon = Math.abs(srcLon - h.lon);
-          if (dLat > 3 || dLon > 5) {
-            tgt = { lat: h.lat, lon: h.lon, name: h.name };
-            break;
-          }
-        }
-      }
-      // Final fallback: pick a random country centroid as target
+      // Fallback: pick a random country centroid as target
       if (!tgt) {
         const tgtCC = countryCodes[Math.floor(Math.random() * countryCodes.length)];
         const tgtCoords = COUNTRY_CENTROIDS[tgtCC];
@@ -1603,13 +1590,15 @@ export default function CyberWeatherGlobe() {
           right: 0,
           zIndex: 10,
           display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "12px 20px",
-          background: "linear-gradient(180deg, rgba(5,10,18,0.95) 0%, transparent 100%)",
+          alignItems: "flex-start",
+          justifyContent: "flex-start",
+          flexWrap: "wrap",
+          gap: "8px",
+          padding: "10px 16px",
+          background: "linear-gradient(180deg, rgba(5,10,18,0.95) 0%, rgba(5,10,18,0.7) 80%, transparent 100%)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", maxWidth: "100%", overflow: "visible" }}>
           <div
             style={{
               width: "8px",
