@@ -799,6 +799,39 @@ _EVENT_CALENDAR = [
         "source": "Semperis 2023-2024 Analysis", "source_url": "https://www.semperis.com/",
         "description": "68% of major ransomware incidents target weekends/holidays (Semperis). Christmas week is peak.",
     },
+    # ─── Iran / Middle East Conflict Events ──────────────────────────────
+    {
+        "id": "iran-conflict-2026", "name": "Iran Conflict — Cyber Escalation",
+        "category": "geopolitical", "start_date": "2026-01-15", "end_date": "2026-12-31",
+        "lead_days": 0, "lag_days": 30, "region": "middle_east", "impact_weight": 0.85,
+        "vectors": ["ssh", "http", "dns_amp", "botnet_c2", "ransomware"], "confidence": 0.92,
+        "source": "CISA/NSA Joint Advisory", "source_url": "https://www.cisa.gov/iran",
+        "description": "Active Iran conflict driving APT33/APT34/MuddyWater/CyberAv3ngers campaigns. Wiper malware, ICS/SCADA targeting, DDoS on gov/mil/energy.",
+    },
+    {
+        "id": "iran-retaliatory-ops", "name": "Iran Retaliatory Cyber Operations",
+        "category": "geopolitical", "start_date": "2026-02-01", "end_date": "2026-06-30",
+        "lead_days": 0, "lag_days": 14, "region": "global", "impact_weight": 0.78,
+        "vectors": ["ssh", "http", "dns_amp", "ransomware", "botnet_c2"], "confidence": 0.85,
+        "source": "Mandiant / CISA", "source_url": "https://www.mandiant.com/",
+        "description": "Retaliatory ops targeting US/EU energy, financial, defense sectors. Shamoon-style wiper, DDoS, credential harvesting.",
+    },
+    {
+        "id": "iran-allied-targeting", "name": "Iran Allied Nation Cyber Targeting",
+        "category": "geopolitical", "start_date": "2026-01-15", "end_date": "2026-12-31",
+        "lead_days": 0, "lag_days": 7, "region": "middle_east", "impact_weight": 0.72,
+        "vectors": ["http", "ssh", "dns_amp"], "confidence": 0.88,
+        "source": "CrowdStrike Intelligence", "source_url": "https://www.crowdstrike.com/",
+        "description": "Israeli, Saudi, UAE, Bahraini infrastructure. Water/energy SCADA, financial, telecom. Precedent: Shamoon (2012), Israel water attacks (2020).",
+    },
+    {
+        "id": "strait-hormuz-cyber", "name": "Strait of Hormuz Cyber Threat",
+        "category": "geopolitical", "start_date": "2026-03-01", "end_date": "2026-09-30",
+        "lead_days": 7, "lag_days": 14, "region": "middle_east", "impact_weight": 0.65,
+        "vectors": ["ssh", "http", "dns_amp"], "confidence": 0.78,
+        "source": "Analyst Curated", "source_url": "https://www.cisa.gov/",
+        "description": "Maritime/shipping infrastructure. GPS spoofing, AIS manipulation, port system intrusions. Energy supply chain disruption.",
+    },
 ]
 
 # Campaign profiles (Architecture doc §4, matched to threatGroups.ts)
@@ -842,6 +875,39 @@ _CAMPAIGN_PROFILES = [
         "confidence": 0.76, "total_campaigns": 31,
         "source": "MITRE ATT&CK", "mitre_id": "G0010",
         "source_url": "https://attack.mitre.org/groups/G0010/",
+    },
+    # ─── Iranian APT Campaigns (conflict-driven escalation) ──────────────
+    {
+        "name": "APT33 (Elfin)", "origin": "Iran / IRGC",
+        "primary_vectors": ["ssh", "http", "dns_amp"],
+        "monthly_intensity": [0.90, 0.95, 1.00, 0.95, 0.90, 0.85, 0.80, 0.85, 0.90, 0.95, 1.00, 0.95],
+        "confidence": 0.85, "total_campaigns": 34,
+        "source": "MITRE ATT&CK", "mitre_id": "G0064",
+        "source_url": "https://attack.mitre.org/groups/G0064/",
+    },
+    {
+        "name": "APT34 (OilRig)", "origin": "Iran / MOIS",
+        "primary_vectors": ["http", "ssh", "dns_amp"],
+        "monthly_intensity": [0.85, 0.90, 0.95, 1.00, 0.90, 0.85, 0.80, 0.85, 0.90, 0.95, 1.00, 0.90],
+        "confidence": 0.83, "total_campaigns": 41,
+        "source": "MITRE ATT&CK", "mitre_id": "G0049",
+        "source_url": "https://attack.mitre.org/groups/G0049/",
+    },
+    {
+        "name": "MuddyWater", "origin": "Iran / MOIS",
+        "primary_vectors": ["http", "ssh", "botnet_c2"],
+        "monthly_intensity": [0.80, 0.85, 0.90, 0.85, 0.80, 0.75, 0.70, 0.75, 0.85, 0.90, 0.95, 0.85],
+        "confidence": 0.81, "total_campaigns": 28,
+        "source": "MITRE ATT&CK", "mitre_id": "G0069",
+        "source_url": "https://attack.mitre.org/groups/G0069/",
+    },
+    {
+        "name": "CyberAv3ngers", "origin": "Iran / IRGC-CEC",
+        "primary_vectors": ["ssh", "http", "dns_amp"],
+        "monthly_intensity": [0.95, 1.00, 0.95, 0.90, 0.85, 0.80, 0.85, 0.90, 0.95, 1.00, 0.95, 0.90],
+        "confidence": 0.80, "total_campaigns": 12,
+        "source": "CISA AA23-335A", "mitre_id": "",
+        "source_url": "https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-335a",
     },
 ]
 
@@ -1267,6 +1333,11 @@ EVENT_CALENDAR = [
     {"id": "cny2026", "name": "Chinese New Year", "category": "holiday", "start": "2026-02-17", "end": "2026-02-23", "region": "asia", "impact": 0.40, "vectors": ["http", "brute_force"], "description": "Reduced SOC staffing in APAC."},
     {"id": "ramadan", "name": "Ramadan", "category": "holiday", "start": "2026-02-18", "end": "2026-03-19", "region": "middle_east", "impact": 0.35, "vectors": ["http", "dns_amp"], "description": "Reduced monitoring in MENA, charity fraud phishing."},
     {"id": "summer-holidays", "name": "European Summer Holidays", "category": "holiday", "start": "2026-07-15", "end": "2026-08-31", "region": "europe", "impact": 0.45, "vectors": ["ransomware", "rdp", "ssh"], "description": "Extended vacation periods reduce IR capacity across EU."},
+    # Iran / Middle East Conflict
+    {"id": "iran-conflict-2026", "name": "Iran Conflict — Cyber Escalation", "category": "geopolitical", "start": "2026-01-15", "end": "2026-12-31", "region": "middle_east", "impact": 0.95, "vectors": ["ssh", "http", "dns_amp", "botnet_c2", "ransomware"], "description": "Active Iran conflict: APT33/APT34/MuddyWater/CyberAv3ngers. Wiper malware, ICS/SCADA targeting, DDoS on gov/mil/energy."},
+    {"id": "iran-retaliatory-ops", "name": "Iran Retaliatory Cyber Operations", "category": "geopolitical", "start": "2026-02-01", "end": "2026-06-30", "region": "global", "impact": 0.88, "vectors": ["ssh", "http", "dns_amp", "ransomware", "botnet_c2"], "description": "Retaliatory ops targeting US/EU energy, financial, defense. Shamoon-style wipers, DDoS."},
+    {"id": "iran-allied-targeting", "name": "Iran Allied Nation Targeting", "category": "geopolitical", "start": "2026-01-15", "end": "2026-12-31", "region": "middle_east", "impact": 0.80, "vectors": ["http", "ssh", "dns_amp"], "description": "Israeli, Saudi, UAE, Bahraini infrastructure. Water/energy SCADA, financial, telecom."},
+    {"id": "strait-hormuz-cyber", "name": "Strait of Hormuz Cyber Threat", "category": "geopolitical", "start": "2026-03-01", "end": "2026-09-30", "region": "middle_east", "impact": 0.75, "vectors": ["ssh", "http", "dns_amp"], "description": "Maritime/shipping infrastructure. GPS spoofing, port system intrusions."},
 ]
 
 SEASONAL_MULTIPLIERS = {
@@ -1285,6 +1356,11 @@ CAMPAIGN_RECURRENCE = [
     {"group": "Cl0p", "aka": "TA505", "months": [1,2,5,6,7,12], "intensity": [0.7,0.8,0.9,1.0,0.75,0.85], "vectors": ["ransomware","http"], "note": "Mass exploitation campaigns followed by extortion waves"},
     {"group": "LockBit", "aka": "ABCD", "months": [1,3,5,6,7,8,11,12], "intensity": [0.7,0.8,0.85,0.9,0.95,1.0,0.9,0.95], "vectors": ["ransomware","rdp","ssh"], "note": "Year-round but peaks during holiday/weekend staffing gaps"},
     {"group": "Volt Typhoon", "aka": "Bronze Silhouette", "months": [1,2,3,4,10,11], "intensity": [0.8,0.85,0.9,0.7,0.95,1.0], "vectors": ["ssh","http"], "note": "Pre-positioning intensifies around Taiwan Strait tensions"},
+    # Iranian APT campaigns (conflict-driven — active year-round during escalation)
+    {"group": "APT33", "aka": "Elfin / Refined Kitten", "months": [1,2,3,4,5,6,7,8,9,10,11,12], "intensity": [0.9,0.95,1.0,0.95,0.9,0.85,0.8,0.85,0.9,0.95,1.0,0.95], "vectors": ["ssh","http","dns_amp"], "note": "IRGC-linked. Energy/aviation targeting. Shamoon/Stonedrill wiper campaigns."},
+    {"group": "APT34", "aka": "OilRig / Helix Kitten", "months": [1,2,3,4,5,6,7,8,9,10,11,12], "intensity": [0.85,0.9,0.95,1.0,0.9,0.85,0.8,0.85,0.9,0.95,1.0,0.9], "vectors": ["http","ssh","dns_amp"], "note": "MOIS-linked. Gov/telecom/financial targeting. DNS tunneling."},
+    {"group": "MuddyWater", "aka": "Mercury / Seedworm", "months": [1,2,3,4,5,6,7,8,9,10,11,12], "intensity": [0.8,0.85,0.9,0.85,0.8,0.75,0.7,0.75,0.85,0.9,0.95,0.85], "vectors": ["http","ssh","botnet_c2"], "note": "MOIS-linked. Spear-phishing, PowerShell backdoors across Middle East."},
+    {"group": "CyberAv3ngers", "aka": "IRGC-CEC", "months": [1,2,3,4,5,6,7,8,9,10,11,12], "intensity": [0.95,1.0,0.95,0.9,0.85,0.8,0.85,0.9,0.95,1.0,0.95,0.9], "vectors": ["ssh","http","dns_amp"], "note": "OT/ICS targeting — water utilities, PLCs. Unitronics attacks (2023). Critical infrastructure focus."},
 ]
 
 
