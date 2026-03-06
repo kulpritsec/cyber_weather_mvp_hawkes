@@ -16,7 +16,6 @@ backend_dir = Path(__file__).parent
 sys.path.insert(0, str(backend_dir))
 
 from app.db import engine, Base, SessionLocal
-from app.ingest.generate_synthetic import seed_synthetic
 from app.forecast.nowcast import compute_nowcast
 from app.services.hawkes_fit import run as fit_hawkes
 
@@ -25,12 +24,6 @@ def setup_database():
     print("🔧 Setting up database schema...")
     Base.metadata.create_all(bind=engine)
     print("✅ Database schema ready")
-
-def generate_data(hours=24, rate=1200, seed=42):
-    """Generate synthetic cyber threat data"""
-    print(f"📊 Generating {hours}h of synthetic data (rate={rate}/hr)...")
-    seed_synthetic(hours=hours, rate=rate, seed=seed)
-    print("✅ Synthetic data generated")
 
 def build_nowcast():
     """Compute current threat nowcast"""
@@ -83,47 +76,35 @@ def start_server(port=8000, reload=True):
 
 def main():
     parser = argparse.ArgumentParser(description="Cyber Weather MVP Startup")
-    parser.add_argument("--skip-data", action="store_true", help="Skip data generation")
+    parser.add_argument("--skip-feeds", action="store_true", help="Skip CTI feed ingestion")
     parser.add_argument("--skip-models", action="store_true", help="Skip model fitting")
-    parser.add_argument("--threat-feeds", action="store_true", help="Ingest real threat intelligence feeds")
-    parser.add_argument("--hours", type=int, default=24, help="Hours of data to generate")
-    parser.add_argument("--rate", type=int, default=1200, help="Events per hour")
+    parser.add_argument("--hours", type=int, default=24, help="Hours of data for model fitting")
     parser.add_argument("--min-events", type=int, default=50, help="Minimum events for model fitting")
     parser.add_argument("--port", type=int, default=8000, help="Server port")
     parser.add_argument("--no-reload", action="store_true", help="Disable auto-reload")
     parser.add_argument("--no-bootstrap", action="store_true", help="Disable bootstrap uncertainty")
-    
+
     args = parser.parse_args()
-    
-    print("🌐 Cyber Weather MVP - Starting Up")
+
+    print("🌐 Cyber Weather MVP - Starting Up (Production)")
     print("=" * 50)
-    
+
     start_time = time.time()
-    
+
     # Step 1: Database setup
     setup_database()
-    
-    # Step 2: Data generation (optional)
-    if not args.skip_data:
-        generate_data(hours=args.hours, rate=args.rate)
-        time.sleep(1)  # Brief pause for database commit
-        
-        # Step 3: Nowcast computation
-        build_nowcast()
-        time.sleep(1)
-    
-    # Step 3.5: Threat feeds ingestion (optional)
-    if args.threat_feeds:
+
+    # Step 2: Ingest real CTI feeds (DShield, Abuse.ch, CrowdSec, OTX, AbuseIPDB, Shodan, Ransomware.live)
+    if not args.skip_feeds:
         ingest_threat_feeds()
         time.sleep(1)
-        # Recompute nowcast with new threat data
         build_nowcast()
         time.sleep(1)
-    
-    # Step 4: Model fitting (optional)
+
+    # Step 3: Model fitting (optional)
     if not args.skip_models:
         fit_models(
-            hours=args.hours, 
+            hours=args.hours,
             min_events=args.min_events,
             bootstrap=not args.no_bootstrap
         )

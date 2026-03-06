@@ -91,47 +91,47 @@ addCoastRegion(55, 75, 30, 180, 0.08);
 // Australia
 addCoastRegion(-45, -10, 110, 155, 0.08);
 
-// ─── MAJOR CITY CTI HOTSPOTS ────────────────────────────────────────────
-// Known high-concentration attack cities with CTI feed data
-const MAJOR_CITY_HOTSPOTS: { name: string; lat: number; lon: number; weight: number }[] = [
+// ─── MAJOR CITY REFERENCE DATA ──────────────────────────────────────────
+// Used to resolve grid cell coordinates to human-readable city names
+const MAJOR_CITY_HOTSPOTS: { name: string; lat: number; lon: number }[] = [
   // North America
-  { name: "New York, US", lat: 40.71, lon: -74.01, weight: 1.0 },
-  { name: "Washington DC, US", lat: 38.91, lon: -77.04, weight: 0.85 },
-  { name: "Los Angeles, US", lat: 34.05, lon: -118.24, weight: 0.8 },
-  { name: "Chicago, US", lat: 41.88, lon: -87.63, weight: 0.7 },
-  { name: "San Francisco, US", lat: 37.77, lon: -122.42, weight: 0.75 },
-  { name: "Dallas, US", lat: 32.78, lon: -96.80, weight: 0.6 },
-  { name: "Miami, US", lat: 25.76, lon: -80.19, weight: 0.55 },
-  { name: "Toronto, CA", lat: 43.65, lon: -79.38, weight: 0.6 },
+  { name: "New York, US", lat: 40.71, lon: -74.01 },
+  { name: "Washington DC, US", lat: 38.91, lon: -77.04 },
+  { name: "Los Angeles, US", lat: 34.05, lon: -118.24 },
+  { name: "Chicago, US", lat: 41.88, lon: -87.63 },
+  { name: "San Francisco, US", lat: 37.77, lon: -122.42 },
+  { name: "Dallas, US", lat: 32.78, lon: -96.80 },
+  { name: "Miami, US", lat: 25.76, lon: -80.19 },
+  { name: "Toronto, CA", lat: 43.65, lon: -79.38 },
   // Europe
-  { name: "London, GB", lat: 51.51, lon: -0.13, weight: 0.95 },
-  { name: "Amsterdam, NL", lat: 52.37, lon: 4.90, weight: 0.85 },
-  { name: "Frankfurt, DE", lat: 50.11, lon: 8.68, weight: 0.8 },
-  { name: "Paris, FR", lat: 48.86, lon: 2.35, weight: 0.7 },
-  { name: "Moscow, RU", lat: 55.76, lon: 37.62, weight: 0.9 },
-  { name: "St Petersburg, RU", lat: 59.93, lon: 30.32, weight: 0.65 },
-  { name: "Kyiv, UA", lat: 50.45, lon: 30.52, weight: 0.6 },
-  { name: "Bucharest, RO", lat: 44.43, lon: 26.10, weight: 0.55 },
+  { name: "London, GB", lat: 51.51, lon: -0.13 },
+  { name: "Amsterdam, NL", lat: 52.37, lon: 4.90 },
+  { name: "Frankfurt, DE", lat: 50.11, lon: 8.68 },
+  { name: "Paris, FR", lat: 48.86, lon: 2.35 },
+  { name: "Moscow, RU", lat: 55.76, lon: 37.62 },
+  { name: "St Petersburg, RU", lat: 59.93, lon: 30.32 },
+  { name: "Kyiv, UA", lat: 50.45, lon: 30.52 },
+  { name: "Bucharest, RO", lat: 44.43, lon: 26.10 },
   // Asia
-  { name: "Beijing, CN", lat: 39.90, lon: 116.40, weight: 0.95 },
-  { name: "Shanghai, CN", lat: 31.23, lon: 121.47, weight: 0.85 },
-  { name: "Shenzhen, CN", lat: 22.54, lon: 114.06, weight: 0.7 },
-  { name: "Tokyo, JP", lat: 35.68, lon: 139.69, weight: 0.75 },
-  { name: "Seoul, KR", lat: 37.57, lon: 126.98, weight: 0.7 },
-  { name: "Mumbai, IN", lat: 19.08, lon: 72.88, weight: 0.65 },
-  { name: "Singapore, SG", lat: 1.35, lon: 103.82, weight: 0.7 },
-  { name: "Taipei, TW", lat: 25.03, lon: 121.57, weight: 0.6 },
-  { name: "Ho Chi Minh, VN", lat: 10.82, lon: 106.63, weight: 0.55 },
-  { name: "Tehran, IR", lat: 35.69, lon: 51.39, weight: 0.6 },
+  { name: "Beijing, CN", lat: 39.90, lon: 116.40 },
+  { name: "Shanghai, CN", lat: 31.23, lon: 121.47 },
+  { name: "Shenzhen, CN", lat: 22.54, lon: 114.06 },
+  { name: "Tokyo, JP", lat: 35.68, lon: 139.69 },
+  { name: "Seoul, KR", lat: 37.57, lon: 126.98 },
+  { name: "Mumbai, IN", lat: 19.08, lon: 72.88 },
+  { name: "Singapore, SG", lat: 1.35, lon: 103.82 },
+  { name: "Taipei, TW", lat: 25.03, lon: 121.57 },
+  { name: "Ho Chi Minh, VN", lat: 10.82, lon: 106.63 },
+  { name: "Tehran, IR", lat: 35.69, lon: 51.39 },
   // South America
-  { name: "São Paulo, BR", lat: -23.55, lon: -46.63, weight: 0.7 },
-  { name: "Buenos Aires, AR", lat: -34.60, lon: -58.38, weight: 0.5 },
+  { name: "São Paulo, BR", lat: -23.55, lon: -46.63 },
+  { name: "Buenos Aires, AR", lat: -34.60, lon: -58.38 },
   // Africa / Middle East
-  { name: "Lagos, NG", lat: 6.52, lon: 3.38, weight: 0.55 },
-  { name: "Johannesburg, ZA", lat: -26.20, lon: 28.05, weight: 0.5 },
-  { name: "Cairo, EG", lat: 30.04, lon: 31.24, weight: 0.5 },
+  { name: "Lagos, NG", lat: 6.52, lon: 3.38 },
+  { name: "Johannesburg, ZA", lat: -26.20, lon: 28.05 },
+  { name: "Cairo, EG", lat: 30.04, lon: 31.24 },
   // Oceania
-  { name: "Sydney, AU", lat: -33.87, lon: 151.21, weight: 0.6 },
+  { name: "Sydney, AU", lat: -33.87, lon: 151.21 },
 ];
 
 /** Resolve a lat/lon to the nearest major city name (within ~2° tolerance) */
@@ -303,36 +303,14 @@ async function fetchThreatData(): Promise<ThreatData> {
       });
     }
 
-    // ─── INJECT MAJOR CITY CTI HOTSPOTS ─────────────────────────────────
-    // Ensure major cities (NYC, London, Tokyo, etc.) always have representation
-    // These represent aggregated CTI feed data from OTX, AbuseIPDB, DShield, CrowdSec
-    const activeVectors = vectors.length > 0 ? vectors : ["ssh", "rdp", "http"];
+    // ─── RESOLVE CITY NAMES FOR HOTSPOTS NEAR MAJOR CITIES ─────────────
+    // Label hotspots near known cities with human-readable names
     for (const city of MAJOR_CITY_HOTSPOTS) {
-      // Check if a hotspot already exists near this city
-      const hasNearby = hotspots.some(
+      const nearby = hotspots.find(
         (h) => Math.abs(h.lat - city.lat) < 2 && Math.abs(h.lon - city.lon) < 2
       );
-      if (!hasNearby) {
-        // Add CTI-derived hotspot for this city with realistic intensity
-        const vec = activeVectors[Math.floor(Math.random() * activeVectors.length)];
-        const baseIntensity = 30 + city.weight * 70 + Math.random() * 20;
-        const baseBr = 0.25 + city.weight * 0.35 + Math.random() * 0.1;
-        hotspots.push({
-          name: city.name,
-          lat: city.lat,
-          lon: city.lon,
-          vector: vec,
-          intensity: baseIntensity,
-          n_br: Math.min(0.95, baseBr),
-        });
-      } else {
-        // Update name of nearby hotspot to use city name
-        const nearby = hotspots.find(
-          (h) => Math.abs(h.lat - city.lat) < 2 && Math.abs(h.lon - city.lon) < 2
-        );
-        if (nearby && nearby.name.includes("°")) {
-          nearby.name = city.name;
-        }
+      if (nearby && nearby.name.includes("°")) {
+        nearby.name = city.name;
       }
     }
 

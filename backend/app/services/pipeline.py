@@ -28,6 +28,8 @@ from ..ingest import dshield, greynoise, abusech
 from ..ingest import otx
 from ..ingest import abuseipdb
 from ..ingest.shodan_exposure import run_shodan_ingest
+from ..ingest.crowdsec import run_crowdsec_ingest
+from ..ingest.ransomware_live import run_ransomware_ingest
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +107,26 @@ async def run_ingest_cycle() -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Shodan ingest failed: {e}")
             results["feeds"]["shodan"] = {"status": "error", "error": str(e)}
+
+        # CrowdSec community blocklist (free, no API key needed)
+        try:
+            crowdsec_result = await run_crowdsec_ingest(session)
+            results["feeds"]["crowdsec"] = crowdsec_result
+            results["total_events"] += crowdsec_result.get("new", 0)
+            logger.info(f"✓ crowdsec: {crowdsec_result.get('new', 0)} new events")
+        except Exception as e:
+            logger.error(f"CrowdSec ingest failed: {e}")
+            results["feeds"]["crowdsec"] = {"status": "error", "error": str(e)}
+
+        # Ransomware.live (free, no API key needed)
+        try:
+            ransomware_result = await run_ransomware_ingest(session)
+            results["feeds"]["ransomware_live"] = ransomware_result
+            results["total_events"] += ransomware_result.get("victims", 0)
+            logger.info(f"✓ ransomware_live: {ransomware_result.get('victims', 0)} victims ingested")
+        except Exception as e:
+            logger.error(f"Ransomware.live ingest failed: {e}")
+            results["feeds"]["ransomware_live"] = {"status": "error", "error": str(e)}
 
         # Execute all feeds in parallel
         feed_results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)

@@ -37,11 +37,6 @@ class Settings(BaseSettings):
     hawkes_bootstrap_samples: int = 20
     hawkes_max_optimization_time: int = 30
 
-    # Data generation
-    synthetic_rate_per_hour: int = 1200
-    synthetic_hours_default: int = 24
-    synthetic_seed: int = 42
-
     # API settings
     api_title: str = "Cyber Weather Forecast API"
     api_version: str = "0.3.0"
