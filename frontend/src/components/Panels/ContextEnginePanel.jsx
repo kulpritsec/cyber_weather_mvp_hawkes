@@ -238,11 +238,13 @@ function EventCard({ event, isActive }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div><div style={{ fontSize: "11px", fontWeight: 700, color: C.bright, fontFamily: MONO }}>{event.name}</div><div style={{ fontSize: "8px", color: C.dim, fontFamily: MONO, marginTop: "2px" }}>{isRecurring ? "Recurring · Monthly" : `${event.start} → ${event.end}`} · {event.region}</div></div>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          {event.source && <span style={{ fontSize: "7px", fontFamily: MONO, color: "#00e5ff", padding: "1px 6px", background: "rgba(0,229,255,0.12)", borderRadius: "2px", letterSpacing: "0.08em" }}>LIVE</span>}
           {isActive && <span style={{ fontSize: "7px", fontFamily: MONO, color, padding: "1px 6px", background: `${color}15`, borderRadius: "2px", animation: "pulse-dot 2s infinite" }}>ACTIVE</span>}
           <span style={{ fontSize: "8px", fontFamily: MONO, color, padding: "1px 6px", background: `${color}10`, borderRadius: "2px", textTransform: "uppercase" }}>{event.category}</span>
         </div>
       </div>
       <div style={{ fontSize: "9px", color: C.text, fontFamily: MONO, lineHeight: 1.5, marginTop: "6px" }}>{event.description}</div>
+      {event.source && <div style={{ fontSize: "7px", color: C.dim, fontFamily: MONO, marginTop: "3px", letterSpacing: "0.05em" }}>SOURCE: {event.source}{event.confidence != null ? ` · CONFIDENCE: ${(event.confidence * 100).toFixed(0)}%` : ""}</div>}
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "6px" }}>
         <div style={{ fontSize: "7px", color: C.dim, fontFamily: MONO, letterSpacing: "0.1em" }}>IMPACT</div>
         <div style={{ flex: 1, height: "3px", background: "rgba(255,255,255,0.05)", borderRadius: "1.5px" }}><div style={{ height: "100%", width: `${event.impact * 100}%`, background: color, borderRadius: "1.5px", boxShadow: `0 0 4px ${color}40` }} /></div>

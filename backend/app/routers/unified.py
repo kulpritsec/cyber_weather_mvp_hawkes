@@ -919,26 +919,38 @@ def _event_active(ev: dict, d: datetime) -> bool:
 
 
 @router.get("/context/events")
-def get_context_events():
-    """Event calendar with active/upcoming status. Source: MSRC, Imperva, MITRE, Analyst."""
-    now = datetime.now(timezone.utc)
-    result = []
-    for ev in _EVENT_CALENDAR:
-        active = _event_active(ev, now)
-        start_dt = datetime.fromisoformat(ev["start_date"]) - timedelta(days=ev["lead_days"])
-        days_until = max(0, (start_dt - now).days)
-        result.append({
-            **ev,
-            "is_active": active,
-            "days_until_active": days_until if not active else 0,
-        })
-    return {
-        "count": len(result),
-        "active_count": sum(1 for e in result if e["is_active"]),
-        "data_source": "analyst_curated",
-        "data_sources": ["MSRC", "NIST NVD", "Imperva Threat Research", "Semperis", "MITRE ATT&CK", "Analyst Curated"],
-        "events": result,
-    }
+def get_context_events(
+    category: Optional[str] = Query(default=None),
+    vector: Optional[str] = Query(default=None),
+    active_only: bool = Query(default=False),
+    include_live: bool = Query(default=True),
+    db: Session = Depends(get_db),
+):
+    """Event calendar: static curated events + live GDELT/RSS events."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    events = list(EVENT_CALENDAR)
+
+    # Merge live-ingested events from GDELT + RSS
+    if include_live:
+        try:
+            from ..ingest.event_feed import get_active_live_events
+            live = get_active_live_events(db)
+            for le in live:
+                le["live"] = True
+            events = events + live
+        except Exception:
+            pass
+
+    if category:
+        events = [e for e in events if e.get("category") == category]
+    if vector:
+        events = [e for e in events if vector in e.get("vectors", [])]
+    if active_only:
+        events = [
+            e for e in events
+            if e.get("start") != "recurring-monthly" and e.get("start", "") <= today <= e.get("end", "")
+        ]
+    return {"events": events, "total": len(events), "as_of": today, "live_feed_enabled": include_live}
 
 
 @router.get("/context/seasonal")
@@ -1371,13 +1383,15 @@ def _compute_seasonal(vector: str, month_idx: int) -> float:
 
 def _compute_event_mult(vector: str, date_str: str) -> float:
     """E(t): product of (1 + w_i * E_i(t)) for all active events.
-    Uses a -3d lead / +7d lag window around each event."""
+    Uses a -3d lead / +7d lag window around each event.
+    Combines static EVENT_CALENDAR + live-ingested events from GDELT/RSS."""
     from datetime import date as dt_date, timedelta as td
     d = dt_date.fromisoformat(date_str)
     product = 1.0
+
+    # 1. Static calendar events
     for evt in EVENT_CALENDAR:
         if evt["start"] == "recurring-monthly":
-            # Patch Tuesday: active days 8-14 of each month (second Tuesday)
             if 8 <= d.day <= 14 and vector in evt["vectors"]:
                 product *= (1 + evt["impact"] * 0.4)
             continue
@@ -1388,6 +1402,23 @@ def _compute_event_mult(vector: str, date_str: str) -> float:
             continue
         if start <= d <= end and vector in evt["vectors"]:
             product *= (1 + evt["impact"] * 0.4)
+
+    # 2. Live-ingested events from GDELT + RSS feeds
+    try:
+        from ..ingest.event_feed import get_active_live_events
+        from ..db import SessionLocal
+        session = SessionLocal()
+        try:
+            live_events = get_active_live_events(session)
+            for evt in live_events:
+                if vector in evt.get("vectors", []):
+                    # Live events use 0.3 weight (slightly lower than curated)
+                    product *= (1 + evt.get("impact", 0.3) * 0.3)
+        finally:
+            session.close()
+    except Exception:
+        pass  # Graceful degradation if live_events table doesn't exist yet
+
     return product
 
 
@@ -1523,28 +1554,6 @@ def get_forecast_series(
             "steady_state": round(steady_state, 2),
         },
     }
-
-
-# ─── Event Calendar API ──────────────────────────────────────────────────
-@router.get("/context/events")
-def get_event_calendar(
-    category: Optional[str] = Query(default=None),
-    vector: Optional[str] = Query(default=None),
-    active_only: bool = Query(default=False),
-):
-    """Serve the canonical event calendar. Replaces hardcoded frontend data."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    events = EVENT_CALENDAR
-    if category:
-        events = [e for e in events if e["category"] == category]
-    if vector:
-        events = [e for e in events if vector in e["vectors"]]
-    if active_only:
-        events = [
-            e for e in events
-            if e["start"] != "recurring-monthly" and e["start"] <= today <= e["end"]
-        ]
-    return {"events": events, "total": len(events), "as_of": today}
 
 
 # ─── Campaign Recurrence API ─────────────────────────────────────────────

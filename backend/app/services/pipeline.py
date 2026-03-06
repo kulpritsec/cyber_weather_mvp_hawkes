@@ -30,6 +30,7 @@ from ..ingest import abuseipdb
 from ..ingest.shodan_exposure import run_shodan_ingest
 from ..ingest.crowdsec import run_crowdsec_ingest
 from ..ingest.ransomware_live import run_ransomware_ingest
+from ..ingest.event_feed import run_event_feed_ingest
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,15 @@ async def run_ingest_cycle() -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Ransomware.live ingest failed: {e}")
             results["feeds"]["ransomware_live"] = {"status": "error", "error": str(e)}
+
+        # GDELT + RSS event feed (live calendar events for pressure/forecast covariates)
+        try:
+            event_feed_result = await run_event_feed_ingest(session)
+            results["feeds"]["event_feed"] = event_feed_result
+            logger.info(f"✓ event_feed: {event_feed_result.get('new_events', 0)} new events")
+        except Exception as e:
+            logger.error(f"Event feed ingest failed: {e}")
+            results["feeds"]["event_feed"] = {"status": "error", "error": str(e)}
 
         # Execute all feeds in parallel
         feed_results = await asyncio.gather(*[task for _, task in tasks], return_exceptions=True)
