@@ -186,14 +186,14 @@ function SeasonalHeatmap({ width = 540, height = 160 }) {
 }
 
 // ─── CAMPAIGN RECURRENCE CHART ─────────────────────────────────────────
-function CampaignRecurrenceChart({ width = 540, height = 280 }) {
+function CampaignRecurrenceChart({ width = 540, height = 280, campaigns = CAMPAIGN_RECURRENCE }) {
   const months = ["J","F","M","A","M","J","J","A","S","O","N","D"];
-  const cellW = (width - 120) / 12, cellH = (height - 30) / CAMPAIGN_RECURRENCE.length;
+  const cellW = (width - 120) / 12, cellH = (height - 30) / campaigns.length;
   const currentMonth = new Date().getMonth();
   return (
     <svg width={width} height={height}>
       {months.map((m, i) => (<g key={i}><text x={120 + i * cellW + cellW / 2} y={14} fill={i === currentMonth ? C.accent : C.dim} fontSize="9" fontFamily={MONO} textAnchor="middle" fontWeight={i === currentMonth ? 700 : 400}>{m}</text>{i === currentMonth && <rect x={120 + i * cellW} y={18} width={cellW} height={height - 24} fill={C.accent} opacity={0.04} />}</g>))}
-      {CAMPAIGN_RECURRENCE.map((campaign, ci) => {
+      {campaigns.map((campaign, ci) => {
         const vecColor = C[campaign.vectors[0]] || C.accent;
         return (<g key={ci}><text x={115} y={28 + ci * cellH + cellH / 2 + 3} fill={C.text} fontSize="8" fontFamily={MONO} textAnchor="end">{campaign.group}</text>{Array.from({ length: 12 }, (_, mi) => { const monthIdx = campaign.months.indexOf(mi + 1); const isActive = monthIdx !== -1; const intensity = isActive ? campaign.intensity[monthIdx] : 0; return (<g key={mi}><rect x={120 + mi * cellW + 1} y={22 + ci * cellH + 1} width={cellW - 2} height={cellH - 2} fill={isActive ? vecColor : "transparent"} opacity={isActive ? intensity * 0.5 : 0} rx={2} stroke={isActive ? vecColor : C.gridLine} strokeWidth={isActive ? 0.5 : 0.3} strokeOpacity={isActive ? 0.4 : 0.3} />{isActive && <circle cx={120 + mi * cellW + cellW / 2} cy={22 + ci * cellH + cellH / 2} r={intensity * cellH * 0.3} fill={vecColor} opacity={intensity * 0.7} />}</g>); })}</g>);
       })}
@@ -488,12 +488,12 @@ export default function ContextEnginePanel({ onClose }) {
             <div style={{ ...panelStyle, padding: "16px", marginBottom: "12px" }}>
               <div style={headerStyle}>CAMPAIGN RECURRENCE MATRIX · C(t) HISTORICAL PATTERNS</div>
               <div style={{ fontSize: "10px", color: C.text, lineHeight: 1.6, marginBottom: "12px" }}>Backtested from 3 years of attributed campaigns. Circle size = historical intensity. Current month highlighted.</div>
-              <CampaignRecurrenceChart width={Math.min(600, chartWidth)} height={280} />
+              <CampaignRecurrenceChart width={Math.min(600, chartWidth)} height={280} campaigns={resolvedCampaigns} />
             </div>
             <div style={{ ...panelStyle, padding: "14px" }}>
               <div style={headerStyle}>CAMPAIGN DETAIL</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
-                {CAMPAIGN_RECURRENCE.map(c => {
+                {resolvedCampaigns.map(c => {
                   const currentMonth = new Date().getMonth() + 1;
                   const isActiveNow = c.months.includes(currentMonth);
                   const vecColor = C[c.vectors[0]] || C.accent;
