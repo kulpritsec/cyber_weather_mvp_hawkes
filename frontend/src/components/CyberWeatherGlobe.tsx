@@ -1590,15 +1590,13 @@ export default function CyberWeatherGlobe() {
           right: 0,
           zIndex: 10,
           display: "flex",
-          alignItems: "flex-start",
-          justifyContent: "flex-start",
-          flexWrap: "wrap",
-          gap: "8px",
-          padding: "10px 16px",
+          flexDirection: "column",
+          padding: "8px 16px",
           background: "linear-gradient(180deg, rgba(5,10,18,0.95) 0%, rgba(5,10,18,0.7) 80%, transparent 100%)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", maxWidth: "100%", overflow: "visible" }}>
+        {/* Title row */}
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "6px" }}>
           <div
             style={{
               width: "8px",
@@ -1632,16 +1630,17 @@ export default function CyberWeatherGlobe() {
               HAWKES PROCESS THREAT INTELLIGENCE · REAL-TIME
             </div>
           </div>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-          <div style={{ textAlign: "right" }}>
+          <div style={{ marginLeft: "auto", textAlign: "right" }}>
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "18px", color: COLORS.textPrimary, fontWeight: 700, letterSpacing: "0.05em" }}>
               {timeStr}
               <span style={{ fontSize: "10px", color: COLORS.textSecondary, marginLeft: "4px" }}>UTC</span>
             </div>
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "9px", color: COLORS.textSecondary, letterSpacing: "0.06em" }}>{dateStr.toUpperCase()}</div>
           </div>
+        </div>
+
+        {/* Button row */}
+        <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
 
           {/* ─── CONTEXT ENGINE BUTTON ─── */}
           <button
@@ -1671,7 +1670,7 @@ export default function CyberWeatherGlobe() {
             onClick={() => setShowFlowMath((v) => !v)}
             style={{
               display: "flex", flexDirection: "column", alignItems: "center",
-              padding: "6px 8px", borderRadius: "4px", minWidth: "82px", textAlign: "center" as const,
+              padding: "6px 8px", borderRadius: "4px", minWidth: "68px", textAlign: "center" as const,
               background: showFlowMath ? "rgba(0,204,255,0.15)" : "rgba(0,204,255,0.05)",
               border: `1px solid ${showFlowMath ? "rgba(0,204,255,0.5)" : "rgba(0,204,255,0.2)"}`,
               cursor: "pointer", transition: "background 0.15s, border-color 0.15s",
@@ -1696,7 +1695,7 @@ export default function CyberWeatherGlobe() {
             onClick={() => setShowMathLab((v) => !v)}
             style={{
               display: "flex", flexDirection: "column", alignItems: "center",
-              padding: "6px 8px", borderRadius: "4px", minWidth: "82px", textAlign: "center" as const,
+              padding: "6px 8px", borderRadius: "4px", minWidth: "68px", textAlign: "center" as const,
               background: showMathLab ? "rgba(0,204,255,0.15)" : "rgba(0,204,255,0.05)",
               border: `1px solid ${showMathLab ? "rgba(0,204,255,0.5)" : "rgba(0,204,255,0.2)"}`,
               cursor: "pointer", transition: "background 0.15s, border-color 0.15s",
@@ -1715,7 +1714,7 @@ export default function CyberWeatherGlobe() {
             onClick={() => setShowInfrastructure((v) => !v)}
             style={{
               display: "flex", flexDirection: "column", alignItems: "center",
-              padding: "6px 8px", borderRadius: "4px", minWidth: "82px", textAlign: "center" as const,
+              padding: "6px 8px", borderRadius: "4px", minWidth: "68px", textAlign: "center" as const,
               background: showInfrastructure ? "rgba(34,197,94,0.15)" : "rgba(34,197,94,0.05)",
               border: `1px solid ${showInfrastructure ? "rgba(34,197,94,0.5)" : "rgba(34,197,94,0.2)"}`,
               cursor: "pointer", transition: "background 0.15s, border-color 0.15s",
@@ -1733,7 +1732,7 @@ export default function CyberWeatherGlobe() {
             onClick={() => setShowThreatIntel((v) => !v)}
             style={{
               display: "flex", flexDirection: "column", alignItems: "center",
-              padding: "6px 8px", borderRadius: "4px", minWidth: "82px", textAlign: "center" as const,
+              padding: "6px 8px", borderRadius: "4px", minWidth: "68px", textAlign: "center" as const,
               background: showThreatIntel ? "rgba(239,68,68,0.15)" : "rgba(239,68,68,0.05)",
               border: `1px solid ${showThreatIntel ? "rgba(239,68,68,0.5)" : "rgba(239,68,68,0.2)"}`,
               cursor: "pointer", transition: "background 0.15s, border-color 0.15s",
@@ -1752,7 +1751,7 @@ export default function CyberWeatherGlobe() {
             onClick={() => setShowIOCEnrich((v) => !v)}
             style={{
               display: "flex", flexDirection: "column", alignItems: "center",
-              padding: "6px 8px", borderRadius: "4px", minWidth: "82px", textAlign: "center" as const,
+              padding: "6px 8px", borderRadius: "4px", minWidth: "68px", textAlign: "center" as const,
               background: showIOCEnrich ? "rgba(0,180,255,0.15)" : "rgba(0,180,255,0.05)",
               border: `1px solid ${showIOCEnrich ? "rgba(0,180,255,0.5)" : "rgba(0,180,255,0.2)"}`,
               cursor: "pointer", transition: "background 0.15s, border-color 0.15s",
@@ -1776,7 +1775,7 @@ export default function CyberWeatherGlobe() {
             onClick={() => setShowTTPHeatmap((v) => !v)}
             style={{
               display: "flex", flexDirection: "column", alignItems: "center",
-              padding: "6px 8px", borderRadius: "4px", minWidth: "82px", textAlign: "center" as const,
+              padding: "6px 8px", borderRadius: "4px", minWidth: "68px", textAlign: "center" as const,
               background: showTTPHeatmap ? "rgba(168,85,247,0.15)" : "rgba(168,85,247,0.05)",
               border: `1px solid ${showTTPHeatmap ? "rgba(168,85,247,0.5)" : "rgba(168,85,247,0.2)"}`,
               cursor: "pointer", transition: "all 0.15s",
@@ -1794,7 +1793,7 @@ export default function CyberWeatherGlobe() {
             onClick={() => setShowPressure((v) => !v)}
             style={{
               display: "flex", flexDirection: "column", alignItems: "center",
-              padding: "6px 8px", borderRadius: "4px", minWidth: "82px", textAlign: "center" as const,
+              padding: "6px 8px", borderRadius: "4px", minWidth: "68px", textAlign: "center" as const,
               background: showPressure ? "rgba(249,115,22,0.15)" : "rgba(249,115,22,0.05)",
               border: `1px solid ${showPressure ? "rgba(249,115,22,0.5)" : "rgba(249,115,22,0.2)"}`,
               cursor: "pointer", transition: "all 0.15s",
@@ -1816,7 +1815,7 @@ export default function CyberWeatherGlobe() {
             onClick={() => setShowAlchemy((v) => !v)}
             style={{
               display: "flex", flexDirection: "column", alignItems: "center",
-              padding: "6px 8px", borderRadius: "4px", minWidth: "82px", textAlign: "center" as const,
+              padding: "6px 8px", borderRadius: "4px", minWidth: "68px", textAlign: "center" as const,
               background: showAlchemy ? "rgba(168,85,247,0.15)" : "rgba(168,85,247,0.05)",
               border: `1px solid ${showAlchemy ? "rgba(168,85,247,0.5)" : "rgba(168,85,247,0.15)"}`,
               cursor: "pointer", transition: "background 0.15s, border-color 0.15s",
@@ -1841,7 +1840,7 @@ export default function CyberWeatherGlobe() {
             onClick={() => setShowBlockchain((v) => !v)}
             style={{
               display: "flex", flexDirection: "column", alignItems: "center",
-              padding: "6px 8px", borderRadius: "4px", minWidth: "82px", textAlign: "center" as const,
+              padding: "6px 8px", borderRadius: "4px", minWidth: "68px", textAlign: "center" as const,
               background: showBlockchain ? "rgba(247,147,26,0.15)" : "rgba(247,147,26,0.05)",
               border: `1px solid ${showBlockchain ? "rgba(247,147,26,0.5)" : "rgba(247,147,26,0.2)"}`,
               cursor: "pointer", transition: "background 0.15s, border-color 0.15s",
@@ -1860,7 +1859,7 @@ export default function CyberWeatherGlobe() {
             onClick={() => setShowVulnWeather((v) => !v)}
             style={{
               display: "flex", flexDirection: "column", alignItems: "center",
-              padding: "6px 8px", borderRadius: "4px", minWidth: "82px", textAlign: "center" as const,
+              padding: "6px 8px", borderRadius: "4px", minWidth: "68px", textAlign: "center" as const,
               background: showVulnWeather ? "rgba(239,68,68,0.15)" : "rgba(239,68,68,0.05)",
               border: `1px solid ${showVulnWeather ? "rgba(239,68,68,0.5)" : "rgba(239,68,68,0.15)"}`,
               cursor: "pointer", transition: "background 0.15s, border-color 0.15s",
@@ -1888,7 +1887,7 @@ export default function CyberWeatherGlobe() {
       <div
         style={{
           position: "absolute",
-          top: "80px",
+          top: "100px",
           left: "16px",
           zIndex: 10,
           width: "240px",
