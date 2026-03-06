@@ -4,9 +4,17 @@
  * Submarine Cables · Internet Exchange Points · Cloud Regions · Satellite Coverage
  * Live exposure data · Attack flows · Country threat shading
  * Mercator projection SVG map with real 50m country borders
+ *
+ * Enhanced with:
+ *  - Mini 3D rotating globe (Three.js inset)
+ *  - Real TeleGeography submarine cable data
+ *  - Cloud provider health (Cloudflare PoPs, GCP incidents)
+ *  - IODA internet outage detection
+ *  - Network flow anomaly correlation
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import * as THREE from 'three';
 
 // ─── DESIGN TOKENS ────────────────────────────────────────────────────────────
 const C = {
@@ -48,6 +56,17 @@ function mercator(lon: number, lat: number, w: number, h: number): [number, numb
   const mercN = Math.log(Math.tan(Math.PI / 4 + latRad / 2));
   const y = h / 2 - (mercN * h / (2 * Math.PI));
   return [x, y];
+}
+
+// ─── THREE.JS HELPER ──────────────────────────────────────────────────────────
+function latLonToVec3(lat: number, lon: number, R: number): THREE.Vector3 {
+  const phi = (90 - lat) * (Math.PI / 180);
+  const theta = (lon + 180) * (Math.PI / 180);
+  return new THREE.Vector3(
+    -R * Math.sin(phi) * Math.cos(theta),
+    R * Math.cos(phi),
+    R * Math.sin(phi) * Math.sin(theta)
+  );
 }
 
 // ─── CABLES ───────────────────────────────────────────────────────────────────
@@ -121,7 +140,7 @@ const IXPS: IXP[] = [
   { name: 'LINX London',      lon: -0.1,   lat: 51.5,  throughput: '7 Tbps',   members: 750,  tier: 1 },
   { name: 'Equinix Ashburn',  lon: -77.5,  lat: 38.9,  throughput: '5 Tbps',   members: 500,  tier: 1 },
   { name: 'BBIX Tokyo',       lon: 139.7,  lat: 35.7,  throughput: '3.5 Tbps', members: 200,  tier: 2 },
-  { name: 'IX.br São Paulo',  lon: -46.6,  lat: -23.5, throughput: '2.5 Tbps', members: 350,  tier: 2 },
+  { name: 'IX.br Sao Paulo',  lon: -46.6,  lat: -23.5, throughput: '2.5 Tbps', members: 350,  tier: 2 },
   { name: 'HKIX Hong Kong',   lon: 114.2,  lat: 22.3,  throughput: '4 Tbps',   members: 400,  tier: 2 },
   { name: 'SIX Seattle',      lon: -122.3, lat: 47.6,  throughput: '2 Tbps',   members: 250,  tier: 2 },
 ];
@@ -132,7 +151,7 @@ const IXP_STRATEGIC: Record<string, string> = {
   'LINX London':      'UK national exchange — major peering hub for European and transatlantic routing',
   'Equinix Ashburn':  'Primary North American peering hub — US East Coast BGP nexus in Equinix data center campus',
   'BBIX Tokyo':       'Primary Japanese IXP — critical Asia-Pacific peering and transit aggregation point',
-  'IX.br São Paulo':  'Largest Latin American IXP — Brazilian national internet exchange for regional routing',
+  'IX.br Sao Paulo':  'Largest Latin American IXP — Brazilian national internet exchange for regional routing',
   'HKIX Hong Kong':   'Asia-Pacific regional hub — major peering point for China and Southeast Asia traffic',
   'SIX Seattle':      'US Pacific Northwest peering hub — connects North American and transpacific routes',
 };
@@ -240,7 +259,7 @@ interface TimelineSeries {
 interface CountryGeo {
   iso: string;
   name: string;
-  path: string; // SVG path d attribute
+  path: string;
 }
 
 interface SelectedItem {
@@ -256,7 +275,61 @@ interface TooltipState {
   text: string;
 }
 
-// ─── COUNTRY CENTROIDS (for flow arrows when only CC is known) ───────────
+// ─── NEW: Live cable from TeleGeography ─────────────────────────────────────
+interface LiveCable {
+  id: string;
+  name: string;
+  color: string;
+  coordinates: number[][][]; // MultiLineString: array of linestrings, each an array of [lon, lat]
+  segmentCount: number;
+}
+
+// ─── NEW: Cloud health types ────────────────────────────────────────────────
+interface CloudflareComponent {
+  name: string;
+  status: string;
+  group_id: string | null;
+  code: string; // extracted airport code
+}
+
+interface GCPIncident {
+  service_name: string;
+  severity: string;
+  begin: string;
+  end: string | null;
+  update_text: string;
+}
+
+interface CloudHealthState {
+  cfOperational: number;
+  cfDegraded: number;
+  cfOutage: number;
+  cfComponents: CloudflareComponent[];
+  gcpIncidents: GCPIncident[];
+  loaded: boolean;
+}
+
+// ─── NEW: IODA outage types ─────────────────────────────────────────────────
+interface IODAOutage {
+  country: string;
+  countryCode: string;
+  datasource: string;
+  signalDrop: number; // percentage drop from normal
+  severity: 'watch' | 'warning' | 'critical';
+}
+
+// ─── NEW: Anomaly correlation types ─────────────────────────────────────────
+interface AnomalyCorrelation {
+  country: string;
+  countryCode: string;
+  flowIncrease: number; // percentage
+  outageDetected: boolean;
+  outageSource: string;
+  severity: 'watch' | 'warning' | 'critical';
+  explanation: string;
+}
+
+// ─── COUNTRY CENTROIDS ───────────────────────────────────────────────────
 const COUNTRY_COORDS: Record<string, [number, number]> = {
   US: [39.8, -98.5], CA: [56.1, -106.3], MX: [23.6, -102.6], BR: [-14.2, -51.9],
   AR: [-38.4, -63.6], CO: [4.6, -74.3], CL: [-35.7, -71.5], GB: [55.4, -3.4],
@@ -272,6 +345,20 @@ const COUNTRY_COORDS: Record<string, [number, number]> = {
   SA: [23.9, 45.1], AE: [23.4, 53.8], IL: [31.1, 34.9], TR: [39.0, 35.2],
   ZA: [-30.6, 22.9], NG: [9.1, 8.7], KE: [-0.02, 37.9], EG: [26.8, 30.8],
   AU: [-25.3, 133.8], NZ: [-40.9, 174.9], BY: [53.7, 28.0],
+};
+
+const COUNTRY_NAMES: Record<string, string> = {
+  US: 'United States', CN: 'China', RU: 'Russia', DE: 'Germany', GB: 'United Kingdom',
+  FR: 'France', JP: 'Japan', KR: 'South Korea', IN: 'India', BR: 'Brazil',
+  IR: 'Iran', UA: 'Ukraine', NL: 'Netherlands', PK: 'Pakistan', ID: 'Indonesia',
+  TR: 'Turkey', AU: 'Australia', CA: 'Canada', IT: 'Italy', ES: 'Spain',
+  VN: 'Vietnam', TH: 'Thailand', MX: 'Mexico', PL: 'Poland', RO: 'Romania',
+  ZA: 'South Africa', NG: 'Nigeria', EG: 'Egypt', SA: 'Saudi Arabia', AE: 'UAE',
+  SG: 'Singapore', TW: 'Taiwan', HK: 'Hong Kong', MY: 'Malaysia', PH: 'Philippines',
+  IQ: 'Iraq', IL: 'Israel', SE: 'Sweden', NO: 'Norway', FI: 'Finland',
+  DK: 'Denmark', CH: 'Switzerland', AT: 'Austria', BE: 'Belgium', CZ: 'Czechia',
+  HU: 'Hungary', GR: 'Greece', PT: 'Portugal', IE: 'Ireland', BY: 'Belarus',
+  AR: 'Argentina', CO: 'Colombia', CL: 'Chile', KE: 'Kenya', NZ: 'New Zealand',
 };
 
 // ─── PROPS ────────────────────────────────────────────────────────────────────
@@ -320,7 +407,7 @@ function Sparkline({ data, color, width = 80, height = 20 }: {
   width?: number;
   height?: number;
 }) {
-  if (data.length < 2) return <span style={{ fontSize: '9px', color: C.muted }}>—</span>;
+  if (data.length < 2) return <span style={{ fontSize: '9px', color: C.muted }}>--</span>;
   const max = Math.max(...data, 1);
   const min = Math.min(...data, 0);
   const range = max - min || 1;
@@ -392,6 +479,228 @@ function geoToSvgPaths(
   return results;
 }
 
+// ─── MINI GLOBE COMPONENT ──────────────────────────────────────────────────
+function MiniGlobe({
+  liveCables,
+  ixps,
+  cloudRegions,
+  outageCountries,
+}: {
+  liveCables: LiveCable[];
+  ixps: IXP[];
+  cloudRegions: CloudRegion[];
+  outageCountries: string[];
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const frameRef = useRef<number>(0);
+  const globeRef = useRef<THREE.Mesh | null>(null);
+  const markersGroupRef = useRef<THREE.Group | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const scene = new THREE.Scene();
+    sceneRef.current = scene;
+
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+    camera.position.set(0, 0, 2.8);
+    cameraRef.current = camera;
+
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: true,
+    });
+    renderer.setSize(180, 180);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setClearColor(0x000000, 0);
+    rendererRef.current = renderer;
+
+    // Lighting
+    const ambient = new THREE.AmbientLight(0x334466, 0.6);
+    scene.add(ambient);
+    const directional = new THREE.DirectionalLight(0x88bbff, 0.8);
+    directional.position.set(5, 3, 5);
+    scene.add(directional);
+
+    // Globe
+    const globeGeo = new THREE.SphereGeometry(1, 64, 64);
+    const textureLoader = new THREE.TextureLoader();
+    const globeMat = new THREE.MeshPhongMaterial({
+      color: 0x1a3a5c,
+      emissive: 0x0a1628,
+      emissiveIntensity: 0.3,
+      shininess: 15,
+    });
+    const globe = new THREE.Mesh(globeGeo, globeMat);
+    scene.add(globe);
+    globeRef.current = globe;
+
+    // Load texture asynchronously
+    textureLoader.load('/earth-night.jpg', (texture) => {
+      globeMat.map = texture;
+      globeMat.color.set(0xffffff);
+      globeMat.needsUpdate = true;
+    });
+
+    // Atmosphere glow
+    const atmosGeo = new THREE.SphereGeometry(1.04, 32, 32);
+    const atmosMat = new THREE.MeshBasicMaterial({
+      color: 0x00aaff,
+      transparent: true,
+      opacity: 0.08,
+      side: THREE.BackSide,
+    });
+    scene.add(new THREE.Mesh(atmosGeo, atmosMat));
+
+    // Markers group (rotates with globe)
+    const markersGroup = new THREE.Group();
+    globe.add(markersGroup);
+    markersGroupRef.current = markersGroup;
+
+    // Add IXP markers as glowing dots
+    for (const ixp of ixps) {
+      const pos = latLonToVec3(ixp.lat, ixp.lon, 1.01);
+      const dotGeo = new THREE.SphereGeometry(0.015, 8, 8);
+      const dotMat = new THREE.MeshBasicMaterial({
+        color: 0x00ccff,
+        transparent: true,
+        opacity: 0.9,
+      });
+      const dot = new THREE.Mesh(dotGeo, dotMat);
+      dot.position.copy(pos);
+      markersGroup.add(dot);
+
+      // Glow ring
+      const ringGeo = new THREE.RingGeometry(0.02, 0.035, 16);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: 0x00ccff,
+        transparent: true,
+        opacity: 0.4,
+        side: THREE.DoubleSide,
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.position.copy(pos);
+      ring.lookAt(pos.clone().multiplyScalar(2));
+      markersGroup.add(ring);
+    }
+
+    // Add cloud region markers as small squares
+    for (const cr of cloudRegions) {
+      const pos = latLonToVec3(cr.lat, cr.lon, 1.015);
+      const sqGeo = new THREE.PlaneGeometry(0.025, 0.025);
+      const sqColor = cr.provider === 'AWS' ? 0xf59e0b : cr.provider === 'Azure' ? 0x3b82f6 : 0xef4444;
+      const sqMat = new THREE.MeshBasicMaterial({
+        color: sqColor,
+        transparent: true,
+        opacity: 0.8,
+        side: THREE.DoubleSide,
+      });
+      const sq = new THREE.Mesh(sqGeo, sqMat);
+      sq.position.copy(pos);
+      sq.lookAt(pos.clone().multiplyScalar(2));
+      markersGroup.add(sq);
+    }
+
+    // Add cable routes (top 30)
+    const topCables = liveCables.slice(0, 30);
+    for (const cable of topCables) {
+      for (const lineString of cable.coordinates) {
+        if (lineString.length < 2) continue;
+        const positions: number[] = [];
+        // Sample points to avoid too many vertices
+        const step = Math.max(1, Math.floor(lineString.length / 50));
+        for (let i = 0; i < lineString.length; i += step) {
+          const coord = lineString[i];
+          const v = latLonToVec3(coord[1], coord[0], 1.005);
+          positions.push(v.x, v.y, v.z);
+        }
+        if (positions.length >= 6) {
+          const lineGeo = new THREE.BufferGeometry();
+          lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+          const cableColor = cable.color ? new THREE.Color(cable.color) : new THREE.Color(0x00ccff);
+          const lineMat = new THREE.LineBasicMaterial({
+            color: cableColor,
+            transparent: true,
+            opacity: 0.5,
+            linewidth: 1,
+          });
+          markersGroup.add(new THREE.Line(lineGeo, lineMat));
+        }
+      }
+    }
+
+    // Add IODA outage markers as pulsing red dots
+    for (const cc of outageCountries) {
+      const coords = COUNTRY_COORDS[cc];
+      if (!coords) continue;
+      const pos = latLonToVec3(coords[0], coords[1], 1.02);
+      const outGeo = new THREE.SphereGeometry(0.025, 12, 12);
+      const outMat = new THREE.MeshBasicMaterial({
+        color: 0xff1744,
+        transparent: true,
+        opacity: 0.9,
+      });
+      const outDot = new THREE.Mesh(outGeo, outMat);
+      outDot.position.copy(pos);
+      outDot.userData = { pulse: true, baseScale: 1 };
+      markersGroup.add(outDot);
+    }
+
+    // Animation loop
+    let time = 0;
+    const animate = () => {
+      frameRef.current = requestAnimationFrame(animate);
+      time += 0.016;
+      globe.rotation.y += 0.002;
+
+      // Pulse outage markers
+      markersGroup.children.forEach(child => {
+        if (child.userData?.pulse) {
+          const scale = 1 + Math.sin(time * 4) * 0.3;
+          child.scale.set(scale, scale, scale);
+          if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshBasicMaterial) {
+            child.material.opacity = 0.5 + Math.sin(time * 4) * 0.4;
+          }
+        }
+      });
+
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    return () => {
+      cancelAnimationFrame(frameRef.current);
+      renderer.dispose();
+      scene.clear();
+      globeGeo.dispose();
+      globeMat.dispose();
+      atmosGeo.dispose();
+      atmosMat.dispose();
+    };
+  }, [liveCables, ixps, cloudRegions, outageCountries]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={180}
+      height={180}
+      style={{
+        width: '180px',
+        height: '180px',
+        borderRadius: '50%',
+        border: '1px solid rgba(0,180,255,0.2)',
+        background: 'rgba(5,10,20,0.8)',
+        flexShrink: 0,
+      }}
+    />
+  );
+}
+
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 export default function InfrastructurePanel({ onClose }: InfrastructurePanelProps) {
   const [showCables, setShowCables] = useState(true);
@@ -401,6 +710,8 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
   const [showExposure, setShowExposure] = useState(true);
   const [showFlows,    setShowFlows]    = useState(true);
   const [showCountryThreat, setShowCountryThreat] = useState(true);
+  const [showOutages, setShowOutages] = useState(true);
+  const [useLiveCables, setUseLiveCables] = useState(true);
 
   const [hoveredCable, setHoveredCable] = useState<string | null>(null);
   const [hoveredIXP,   setHoveredIXP]   = useState<string | null>(null);
@@ -416,6 +727,23 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
   const [timeline, setTimeline] = useState<TimelineSeries>({});
   const [countryPaths, setCountryPaths] = useState<CountryGeo[]>([]);
   const [dataStatus, setDataStatus] = useState<'loading' | 'live' | 'fallback'>('loading');
+
+  // ─── NEW: Live cables state ──────────────────────────────
+  const [liveCables, setLiveCables] = useState<LiveCable[]>([]);
+  const [liveCableCount, setLiveCableCount] = useState(0);
+
+  // ─── NEW: Cloud health state ──────────────────────────────
+  const [cloudHealth, setCloudHealth] = useState<CloudHealthState>({
+    cfOperational: 0, cfDegraded: 0, cfOutage: 0,
+    cfComponents: [], gcpIncidents: [], loaded: false,
+  });
+
+  // ─── NEW: IODA outage state ──────────────────────────────
+  const [iodaOutages, setIodaOutages] = useState<IODAOutage[]>([]);
+  const [iodaLoaded, setIodaLoaded] = useState(false);
+
+  // ─── NEW: Anomaly correlations ──────────────────────────────
+  const [anomalies, setAnomalies] = useState<AnomalyCorrelation[]>([]);
 
   const SVG_W = 830;
   const SVG_H = 420;
@@ -493,6 +821,277 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
     return () => { cancelled = true; };
   }, []);
 
+  // ─── NEW: Fetch TeleGeography submarine cable data ──────────────────
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchCables() {
+      try {
+        const results = await Promise.allSettled([
+          fetch('https://www.submarinecablemap.com/api/v3/cable/cable-geo.json')
+            .then(r => r.ok ? r.json() : null),
+        ]);
+
+        if (cancelled) return;
+
+        const cableGeo = results[0].status === 'fulfilled' ? results[0].value : null;
+        if (cableGeo?.features && Array.isArray(cableGeo.features)) {
+          const parsed: LiveCable[] = [];
+          for (const feature of cableGeo.features) {
+            if (!feature.properties || !feature.geometry) continue;
+            const geom = feature.geometry;
+            let coords: number[][][] = [];
+            if (geom.type === 'MultiLineString' && Array.isArray(geom.coordinates)) {
+              coords = geom.coordinates;
+            } else if (geom.type === 'LineString' && Array.isArray(geom.coordinates)) {
+              coords = [geom.coordinates];
+            } else {
+              continue;
+            }
+            const totalSegments = coords.reduce((sum, ls) => sum + ls.length, 0);
+            parsed.push({
+              id: feature.properties.id || feature.properties.name || '',
+              name: feature.properties.name || 'Unknown',
+              color: feature.properties.color || '#00ccff',
+              coordinates: coords,
+              segmentCount: totalSegments,
+            });
+          }
+          // Sort by segment count (longest cables first)
+          parsed.sort((a, b) => b.segmentCount - a.segmentCount);
+          setLiveCableCount(parsed.length);
+          // Keep top 100 for SVG rendering
+          setLiveCables(parsed.slice(0, 100));
+        }
+      } catch {
+        // Fallback: keep using seed cables
+        setLiveCables([]);
+      }
+    }
+
+    fetchCables();
+    return () => { cancelled = true; };
+  }, []);
+
+  // ─── NEW: Fetch Cloud Health data ──────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchCloudHealth() {
+      const results = await Promise.allSettled([
+        fetch('https://yh6f0r4529hb.statuspage.io/api/v2/components.json')
+          .then(r => r.ok ? r.json() : null),
+        fetch('https://status.cloud.google.com/incidents.json')
+          .then(r => r.ok ? r.json() : null),
+      ]);
+
+      if (cancelled) return;
+
+      let cfOp = 0, cfDeg = 0, cfOut = 0;
+      const cfComps: CloudflareComponent[] = [];
+      const gcpIncs: GCPIncident[] = [];
+
+      // Cloudflare components
+      const cfData = results[0].status === 'fulfilled' ? results[0].value : null;
+      if (cfData?.components && Array.isArray(cfData.components)) {
+        for (const comp of cfData.components) {
+          // Filter to components with airport codes: name contains (XXX) pattern
+          const airportMatch = comp.name?.match(/\(([A-Z]{3})\)/);
+          if (!airportMatch) continue;
+          const status = comp.status || 'operational';
+          const parsed: CloudflareComponent = {
+            name: comp.name,
+            status,
+            group_id: comp.group_id || null,
+            code: airportMatch[1],
+          };
+          cfComps.push(parsed);
+          if (status === 'operational') cfOp++;
+          else if (status === 'degraded_performance') cfDeg++;
+          else if (status === 'partial_outage' || status === 'major_outage') cfOut++;
+          else cfOp++; // default to operational
+        }
+      }
+
+      // GCP incidents
+      const gcpData = results[1].status === 'fulfilled' ? results[1].value : null;
+      if (Array.isArray(gcpData)) {
+        // Get only recent/active incidents (no end date or end within 24h)
+        const now = Date.now();
+        const dayAgo = now - 86400000;
+        for (const inc of gcpData.slice(0, 50)) {
+          const endTime = inc.end ? new Date(inc.end).getTime() : null;
+          const beginTime = inc.begin ? new Date(inc.begin).getTime() : now;
+          const isActive = !endTime || endTime > dayAgo;
+          const isRecent = beginTime > dayAgo;
+          if (isActive || isRecent) {
+            gcpIncs.push({
+              service_name: inc.service_name || 'Unknown',
+              severity: inc.severity || 'medium',
+              begin: inc.begin || '',
+              end: inc.end || null,
+              update_text: inc['most-recent-update']?.text || inc.external_desc || '',
+            });
+          }
+          if (gcpIncs.length >= 10) break;
+        }
+      }
+
+      setCloudHealth({
+        cfOperational: cfOp, cfDegraded: cfDeg, cfOutage: cfOut,
+        cfComponents: cfComps, gcpIncidents: gcpIncs, loaded: true,
+      });
+    }
+
+    fetchCloudHealth();
+    return () => { cancelled = true; };
+  }, []);
+
+  // ─── NEW: Fetch IODA outage data ──────────────────────────────
+  useEffect(() => {
+    if (countryThreats.length === 0) return;
+    let cancelled = false;
+
+    async function fetchIODA() {
+      // Get top 5 countries by threat count
+      const sorted = [...countryThreats].sort((a, b) => b.total - a.total);
+      const top5 = sorted.slice(0, 5);
+
+      const now = Math.floor(Date.now() / 1000);
+      const dayAgo = now - 86400;
+
+      const results = await Promise.allSettled(
+        top5.map(ct =>
+          fetch(`https://api.ioda.inetintel.cc.gatech.edu/v2/signals/raw/country/${ct.code}?from=${dayAgo}&until=${now}`)
+            .then(r => r.ok ? r.json() : null)
+        )
+      );
+
+      if (cancelled) return;
+
+      const outages: IODAOutage[] = [];
+      results.forEach((result, idx) => {
+        if (result.status !== 'fulfilled' || !result.value) return;
+        const data = result.value;
+        const cc = top5[idx].code;
+        const name = COUNTRY_NAMES[cc] || cc;
+
+        // Check each datasource for signal drops
+        if (data?.data && Array.isArray(data.data)) {
+          for (const ds of data.data) {
+            const dsName = ds.datasource || ds.source || 'unknown';
+            const values = ds.values || ds.signal || [];
+            if (!Array.isArray(values) || values.length < 2) continue;
+
+            // Calculate baseline (average of first half) vs recent (last quarter)
+            const midpoint = Math.floor(values.length / 2);
+            const baseline = values.slice(0, midpoint).filter((v: number) => v != null && v > 0);
+            const recent = values.slice(-Math.floor(values.length / 4)).filter((v: number) => v != null && v > 0);
+
+            if (baseline.length === 0 || recent.length === 0) continue;
+
+            const baselineAvg = baseline.reduce((a: number, b: number) => a + b, 0) / baseline.length;
+            const recentAvg = recent.reduce((a: number, b: number) => a + b, 0) / recent.length;
+
+            if (baselineAvg === 0) continue;
+            const dropPct = ((baselineAvg - recentAvg) / baselineAvg) * 100;
+
+            // Threshold: >15% drop is significant
+            if (dropPct > 15) {
+              let severity: 'watch' | 'warning' | 'critical' = 'watch';
+              if (dropPct > 50) severity = 'critical';
+              else if (dropPct > 30) severity = 'warning';
+
+              outages.push({
+                country: name,
+                countryCode: cc,
+                datasource: dsName,
+                signalDrop: Math.round(dropPct),
+                severity,
+              });
+            }
+          }
+        }
+      });
+
+      setIodaOutages(outages);
+      setIodaLoaded(true);
+    }
+
+    fetchIODA();
+    return () => { cancelled = true; };
+  }, [countryThreats]);
+
+  // ─── NEW: Compute anomaly correlations ──────────────────────────────
+  useEffect(() => {
+    if (flows.length === 0 || !iodaLoaded) return;
+
+    // Compute flow volume per country
+    const flowByCountry: Record<string, number> = {};
+    for (const f of flows) {
+      flowByCountry[f.source_country] = (flowByCountry[f.source_country] || 0) + f.event_count;
+    }
+
+    // Calculate average flow volume
+    const flowValues = Object.values(flowByCountry);
+    const avgFlow = flowValues.length > 0
+      ? flowValues.reduce((a, b) => a + b, 0) / flowValues.length
+      : 0;
+
+    const correlations: AnomalyCorrelation[] = [];
+
+    // Check each country with high flow AND outage
+    for (const [cc, total] of Object.entries(flowByCountry)) {
+      if (avgFlow === 0) continue;
+      const ratio = total / avgFlow;
+      const pctIncrease = Math.round((ratio - 1) * 100);
+
+      // Only flag if significantly above average
+      if (pctIncrease < 100) continue;
+
+      const countryOutages = iodaOutages.filter(o => o.countryCode === cc);
+      const hasOutage = countryOutages.length > 0;
+
+      // Must have both high flow AND outage to correlate
+      if (!hasOutage && pctIncrease < 300) continue;
+
+      let severity: 'watch' | 'warning' | 'critical' = 'watch';
+      if (hasOutage && pctIncrease > 300) severity = 'critical';
+      else if (hasOutage && pctIncrease > 150) severity = 'warning';
+      else if (pctIncrease > 400) severity = 'warning';
+
+      const name = COUNTRY_NAMES[cc] || cc;
+      const outageDesc = hasOutage
+        ? countryOutages.map(o => `${o.datasource} ${o.signalDrop}% drop`).join(', ')
+        : 'no connectivity drop detected';
+
+      let explanation = '';
+      if (hasOutage && pctIncrease > 200) {
+        explanation = `${name}: ${pctIncrease}% flow increase + ${outageDesc} — possible coordinated attack or infrastructure disruption`;
+      } else if (hasOutage) {
+        explanation = `${name}: ${pctIncrease}% flow increase + ${outageDesc} — monitoring for escalation`;
+      } else {
+        explanation = `${name}: ${pctIncrease}% flow increase above baseline — anomalous traffic volume`;
+      }
+
+      correlations.push({
+        country: name,
+        countryCode: cc,
+        flowIncrease: pctIncrease,
+        outageDetected: hasOutage,
+        outageSource: hasOutage ? countryOutages[0].datasource : '',
+        severity,
+        explanation,
+      });
+    }
+
+    // Sort by severity then flow increase
+    const severityOrder = { critical: 0, warning: 1, watch: 2 };
+    correlations.sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity] || b.flowIncrease - a.flowIncrease);
+
+    setAnomalies(correlations.slice(0, 10));
+  }, [flows, iodaOutages, iodaLoaded]);
+
   // Convert lon/lat to SVG coords
   const m = (lon: number, lat: number): [number, number] => mercator(lon, lat, SVG_W, SVG_H);
 
@@ -531,7 +1130,15 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
 
   // Country threat color
   const maxThreat = Math.max(...countryThreats.map(c => c.total), 1);
+
+  // Countries with IODA outages for special rendering
+  const outageCountryCodes = new Set(iodaOutages.map(o => o.countryCode));
+  // Countries with anomaly escalation
+  const escalationCodes = new Set(anomalies.filter(a => a.severity === 'critical').map(a => a.countryCode));
+
   const getCountryFill = (iso: string): string => {
+    if (showOutages && escalationCodes.has(iso)) return 'rgba(255,23,68,0.45)';
+    if (showOutages && outageCountryCodes.has(iso)) return 'rgba(255,152,0,0.35)';
     if (!showCountryThreat) return 'rgba(20,40,80,0.45)';
     const ct = countryThreats.find(c => c.code === iso);
     if (!ct) return 'rgba(20,40,80,0.45)';
@@ -542,18 +1149,49 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
     return `rgba(34,197,94,${0.05 + norm * 0.2})`;
   };
 
+  const getCountryStroke = (iso: string): string => {
+    if (showOutages && escalationCodes.has(iso)) return 'rgba(255,23,68,0.7)';
+    if (showOutages && outageCountryCodes.has(iso)) return 'rgba(255,152,0,0.5)';
+    return 'rgba(40,80,140,0.4)';
+  };
+
+  const getCountryStrokeWidth = (iso: string): number => {
+    if (showOutages && (escalationCodes.has(iso) || outageCountryCodes.has(iso))) return 1.2;
+    return 0.4;
+  };
+
+  // Cloud region health status color
+  const getCloudRegionHealthBorder = useCallback((region: CloudRegion): string => {
+    if (!cloudHealth.loaded) return PROVIDER_COLORS[region.provider];
+    // Check if any CF components near this region have issues
+    const degradedComps = cloudHealth.cfComponents.filter(c =>
+      c.status === 'degraded_performance'
+    );
+    const outageComps = cloudHealth.cfComponents.filter(c =>
+      c.status === 'partial_outage' || c.status === 'major_outage'
+    );
+
+    // Check GCP incidents for GCP regions
+    if (region.provider === 'GCP') {
+      const activeGCP = cloudHealth.gcpIncidents.filter(i => !i.end);
+      if (activeGCP.length > 0) return '#ff9800';
+    }
+
+    if (outageComps.length > 0) return '#ef4444';
+    if (degradedComps.length > 0) return '#ff9800';
+    return '#22c55e';
+  }, [cloudHealth]);
+
   // Grid lines
   const latLines = [-60, -30, 0, 30, 60];
   const lonLines = [-150, -120, -90, -60, -30, 0, 30, 60, 90, 120, 150];
 
-  // Flow arrow targets — pick target from IXPs near the flow destination or default
+  // Flow arrow targets
   const getFlowTarget = (flow: FlowData): [number, number] => {
-    // Find nearest IXP or use a default target
     const targets: [number, number][] = [
       [-77.5, 38.9], [8.6, 50.1], [139.7, 35.7], [-122.3, 47.6],
       [4.9, 52.4], [103.8, 1.3], [-46.6, -23.5], [114.2, 22.3],
     ];
-    // Pick a target that's geographically distant from source
     const srcCoords = COUNTRY_COORDS[flow.source_country];
     if (!srcCoords) return targets[0];
     let best = targets[0];
@@ -565,10 +1203,26 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
     return best;
   };
 
+  // Determine which cables to render on SVG
+  const activeSeedCables = CABLES;
+  const shouldUseLive = useLiveCables && liveCables.length > 0;
+
+  // Severity color helpers
+  const severityColor = (sev: 'watch' | 'warning' | 'critical') => {
+    if (sev === 'critical') return '#ff1744';
+    if (sev === 'warning') return '#ff9800';
+    return '#eab308';
+  };
+  const severityBg = (sev: 'watch' | 'warning' | 'critical') => {
+    if (sev === 'critical') return 'rgba(255,23,68,0.15)';
+    if (sev === 'warning') return 'rgba(255,152,0,0.12)';
+    return 'rgba(234,179,8,0.1)';
+  };
+
   return (
     <div style={{
       position: 'fixed', top: '60px', left: '16px',
-      width: '880px', maxWidth: 'calc(100vw - 32px)',
+      width: '900px', maxWidth: 'calc(100vw - 32px)',
       maxHeight: 'calc(100vh - 80px)', overflow: 'hidden',
       zIndex: 1200, borderRadius: '10px',
       background: C.bg, border: `1px solid ${C.border}`,
@@ -582,97 +1236,141 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
         padding: '10px 16px 8px', borderBottom: `1px solid ${C.border}`,
         flexShrink: 0,
       }}>
-        {/* Title row */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div>
-              <div style={{ fontSize: '14px', fontWeight: 700, color: C.accent, letterSpacing: '0.06em' }}>
-                🌐 INFRASTRUCTURE TOPOLOGY
+        {/* Title row with mini globe */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: C.accent, letterSpacing: '0.06em' }}>
+                  INFRASTRUCTURE TOPOLOGY
+                </div>
+                <div style={{ fontSize: '10px', color: C.muted, marginTop: '2px', letterSpacing: '0.04em' }}>
+                  Cables · IXPs · Cloud · Exposure · Attack Flows · Threat Map · Outages
+                </div>
               </div>
-              <div style={{ fontSize: '10px', color: C.muted, marginTop: '2px', letterSpacing: '0.04em' }}>
-                Cables · IXPs · Cloud · Exposure · Attack Flows · Threat Map
-              </div>
-            </div>
-            {/* Live data badge */}
-            <div style={{
-              fontSize: '9px', fontWeight: 700, letterSpacing: '0.1em',
-              padding: '2px 8px', borderRadius: '3px',
-              background: dataStatus === 'live' ? 'rgba(34,197,94,0.15)' : 'rgba(234,179,8,0.15)',
-              color: dataStatus === 'live' ? '#22c55e' : '#eab308',
-              border: `1px solid ${dataStatus === 'live' ? 'rgba(34,197,94,0.3)' : 'rgba(234,179,8,0.3)'}`,
-            }}>
-              {dataStatus === 'loading' ? '⏳ LOADING' : dataStatus === 'live' ? '● LIVE DATA' : '○ PARTIAL'}
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            style={{
-              background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.border}`,
-              borderRadius: '4px', color: C.muted, fontSize: '16px',
-              width: '28px', height: '28px', cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              lineHeight: 1,
-            }}
-          >
-            ×
-          </button>
-        </div>
-
-        {/* ── EXPOSURE SUMMARY STATS BAR ── */}
-        {summary && (
-          <div style={{
-            display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center',
-            padding: '4px 0',
-          }}>
-            <div style={{ fontSize: '10px', color: C.muted }}>
-              GLOBAL EXPOSURE:
-              <span style={{ color: '#ef4444', fontWeight: 700, marginLeft: '4px' }}>
-                {summary.total_global_exposure.toLocaleString()}
-              </span>
-            </div>
-            {summary.queries.map(q => (
-              <div key={q.tag} style={{
-                fontSize: '9px', color: C.muted,
-                display: 'flex', alignItems: 'center', gap: '4px',
+              {/* Live data badge */}
+              <div style={{
+                fontSize: '9px', fontWeight: 700, letterSpacing: '0.1em',
+                padding: '2px 8px', borderRadius: '3px',
+                background: dataStatus === 'live' ? 'rgba(34,197,94,0.15)' : 'rgba(234,179,8,0.15)',
+                color: dataStatus === 'live' ? '#22c55e' : '#eab308',
+                border: `1px solid ${dataStatus === 'live' ? 'rgba(34,197,94,0.3)' : 'rgba(234,179,8,0.3)'}`,
               }}>
-                <span style={{
-                  display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%',
-                  background: QUERY_COLORS[q.tag] || QUERY_COLORS.default,
-                }} />
-                <span style={{ color: C.text }}>{q.tag.replace(/_/g, ' ')}</span>
-                <span>{q.total_global.toLocaleString()}</span>
-                {/* Timeline sparkline */}
-                {timeline[q.tag] && timeline[q.tag].length > 1 && (
-                  <Sparkline
-                    data={timeline[q.tag].map(p => p.total)}
-                    color={QUERY_COLORS[q.tag] || QUERY_COLORS.default}
-                    width={50}
-                    height={14}
-                  />
-                )}
+                {dataStatus === 'loading' ? 'LOADING' : dataStatus === 'live' ? 'LIVE DATA' : 'PARTIAL'}
               </div>
-            ))}
-            {summary.top_vulns.length > 0 && (
-              <div style={{ fontSize: '9px', color: C.muted }}>
-                TOP CVE:
-                <span style={{ color: '#ef4444', marginLeft: '4px' }}>
-                  {summary.top_vulns.slice(0, 3).join(', ')}
-                </span>
+              {/* Cable count badge */}
+              {liveCableCount > 0 && (
+                <div style={{
+                  fontSize: '9px', fontWeight: 700, letterSpacing: '0.1em',
+                  padding: '2px 8px', borderRadius: '3px',
+                  background: 'rgba(0,204,255,0.1)',
+                  color: C.accent,
+                  border: '1px solid rgba(0,204,255,0.25)',
+                }}>
+                  {liveCableCount} CABLES
+                </div>
+              )}
+              {/* IODA badge */}
+              {iodaOutages.length > 0 && (
+                <div style={{
+                  fontSize: '9px', fontWeight: 700, letterSpacing: '0.1em',
+                  padding: '2px 8px', borderRadius: '3px',
+                  background: 'rgba(255,23,68,0.12)',
+                  color: '#ff1744',
+                  border: '1px solid rgba(255,23,68,0.3)',
+                }}>
+                  {iodaOutages.length} OUTAGE{iodaOutages.length !== 1 ? 'S' : ''}
+                </div>
+              )}
+            </div>
+
+            {/* ── EXPOSURE SUMMARY STATS BAR ── */}
+            {summary && (
+              <div style={{
+                display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center',
+                padding: '4px 0',
+              }}>
+                <div style={{ fontSize: '10px', color: C.muted }}>
+                  GLOBAL EXPOSURE:
+                  <span style={{ color: '#ef4444', fontWeight: 700, marginLeft: '4px' }}>
+                    {summary.total_global_exposure.toLocaleString()}
+                  </span>
+                </div>
+                {summary.queries.map(q => (
+                  <div key={q.tag} style={{
+                    fontSize: '9px', color: C.muted,
+                    display: 'flex', alignItems: 'center', gap: '4px',
+                  }}>
+                    <span style={{
+                      display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%',
+                      background: QUERY_COLORS[q.tag] || QUERY_COLORS.default,
+                    }} />
+                    <span style={{ color: C.text }}>{q.tag.replace(/_/g, ' ')}</span>
+                    <span>{q.total_global.toLocaleString()}</span>
+                    {timeline[q.tag] && timeline[q.tag].length > 1 && (
+                      <Sparkline
+                        data={timeline[q.tag].map(p => p.total)}
+                        color={QUERY_COLORS[q.tag] || QUERY_COLORS.default}
+                        width={50}
+                        height={14}
+                      />
+                    )}
+                  </div>
+                ))}
+                {summary.top_vulns.length > 0 && (
+                  <div style={{ fontSize: '9px', color: C.muted }}>
+                    TOP CVE:
+                    <span style={{ color: '#ef4444', marginLeft: '4px' }}>
+                      {summary.top_vulns.slice(0, 3).join(', ')}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
           </div>
-        )}
+
+          {/* Mini 3D Globe (top-right) */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', marginLeft: '12px' }}>
+            <MiniGlobe
+              liveCables={liveCables}
+              ixps={IXPS}
+              cloudRegions={CLOUD_REGIONS}
+              outageCountries={Array.from(outageCountryCodes)}
+            />
+            <button
+              onClick={onClose}
+              style={{
+                background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.border}`,
+                borderRadius: '4px', color: C.muted, fontSize: '10px',
+                padding: '2px 12px', cursor: 'pointer',
+                fontFamily: C.mono, letterSpacing: '0.06em',
+              }}
+            >
+              CLOSE
+            </button>
+          </div>
+        </div>
 
         {/* Toggle row */}
         <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-          <ToggleBtn label="⬡ CABLES" active={showCables} onClick={() => setShowCables(v => !v)} />
-          <ToggleBtn label="◉ IXPs"   active={showIXPs}   onClick={() => setShowIXPs(v => !v)} />
-          <ToggleBtn label="▪ CLOUD"  active={showCloud}  onClick={() => setShowCloud(v => !v)} />
-          <ToggleBtn label="⊙ SAT"    active={showSat}    onClick={() => setShowSat(v => !v)} />
+          <ToggleBtn label="CABLES" active={showCables} onClick={() => setShowCables(v => !v)} />
+          <ToggleBtn label="IXPs"   active={showIXPs}   onClick={() => setShowIXPs(v => !v)} />
+          <ToggleBtn label="CLOUD"  active={showCloud}  onClick={() => setShowCloud(v => !v)} />
+          <ToggleBtn label="SAT"    active={showSat}    onClick={() => setShowSat(v => !v)} />
           <span style={{ width: '1px', height: '20px', background: 'rgba(255,255,255,0.1)', margin: '0 2px' }} />
-          <ToggleBtn label="⦿ EXPOSURE" active={showExposure} onClick={() => setShowExposure(v => !v)} color="rgba(239,68,68" />
-          <ToggleBtn label="→ FLOWS"    active={showFlows}    onClick={() => setShowFlows(v => !v)} color="rgba(0,229,255" />
-          <ToggleBtn label="◼ THREATS"  active={showCountryThreat} onClick={() => setShowCountryThreat(v => !v)} color="rgba(249,115,22" />
+          <ToggleBtn label="EXPOSURE" active={showExposure} onClick={() => setShowExposure(v => !v)} color="rgba(239,68,68" />
+          <ToggleBtn label="FLOWS"    active={showFlows}    onClick={() => setShowFlows(v => !v)} color="rgba(0,229,255" />
+          <ToggleBtn label="THREATS"  active={showCountryThreat} onClick={() => setShowCountryThreat(v => !v)} color="rgba(249,115,22" />
+          <ToggleBtn label="OUTAGES"  active={showOutages} onClick={() => setShowOutages(v => !v)} color="rgba(255,23,68" />
+          <span style={{ width: '1px', height: '20px', background: 'rgba(255,255,255,0.1)', margin: '0 2px' }} />
+          {liveCableCount > 0 && (
+            <ToggleBtn
+              label={useLiveCables ? 'LIVE CABLES' : 'SEED CABLES'}
+              active={useLiveCables}
+              onClick={() => setUseLiveCables(v => !v)}
+              color="rgba(20,184,166"
+            />
+          )}
         </div>
       </div>
 
@@ -691,6 +1389,13 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
             viewBox={`0 0 ${SVG_W} ${SVG_H}`}
             style={{ display: 'block', background: 'rgba(5,12,25,1)', maxWidth: '100%' }}
           >
+            {/* SVG defs for outage pattern */}
+            <defs>
+              <pattern id="outage-hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+                <line x1="0" y1="0" x2="0" y2="6" stroke="rgba(255,23,68,0.3)" strokeWidth="1.5" />
+              </pattern>
+            </defs>
+
             {/* ── GRID ── */}
             {latLines.map(lat => {
               const [, y] = m(0, lat);
@@ -718,28 +1423,46 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
 
             {/* ── COUNTRIES (50m GeoJSON) with threat shading ── */}
             {countryPaths.map(cp => (
-              <path
-                key={cp.iso + cp.name}
-                d={cp.path}
-                fill={getCountryFill(cp.iso)}
-                stroke="rgba(40,80,140,0.4)"
-                strokeWidth={0.4}
-                onMouseEnter={(e) => {
-                  const ct = countryThreats.find(c => c.code === cp.iso);
-                  if (ct || cp.name) {
-                    const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
-                    setTooltip({
-                      x: e.clientX - (rect?.left ?? 0),
-                      y: e.clientY - (rect?.top ?? 0),
-                      text: ct
-                        ? `${cp.name} (${cp.iso}) · ${ct.total.toLocaleString()} events · Top: ${Object.entries(ct.vectors).sort((a,b) => b[1]-a[1]).slice(0,2).map(([v,c]) => `${v} ${c.toLocaleString()}`).join(', ')}`
-                        : `${cp.name} (${cp.iso})`,
-                    });
-                  }
-                }}
-                onMouseLeave={() => setTooltip(null)}
-                style={{ cursor: 'pointer' }}
-              />
+              <g key={cp.iso + cp.name}>
+                <path
+                  d={cp.path}
+                  fill={getCountryFill(cp.iso)}
+                  stroke={getCountryStroke(cp.iso)}
+                  strokeWidth={getCountryStrokeWidth(cp.iso)}
+                  onMouseEnter={(e) => {
+                    const ct = countryThreats.find(c => c.code === cp.iso);
+                    const outage = iodaOutages.find(o => o.countryCode === cp.iso);
+                    if (ct || cp.name || outage) {
+                      const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
+                      let text = '';
+                      if (ct) {
+                        text = `${cp.name} (${cp.iso}) · ${ct.total.toLocaleString()} events · Top: ${Object.entries(ct.vectors).sort((a,b) => b[1]-a[1]).slice(0,2).map(([v,c]) => `${v} ${c.toLocaleString()}`).join(', ')}`;
+                      } else {
+                        text = `${cp.name} (${cp.iso})`;
+                      }
+                      if (outage) {
+                        text += ` | OUTAGE: ${outage.datasource} ${outage.signalDrop}% drop`;
+                      }
+                      setTooltip({
+                        x: e.clientX - (rect?.left ?? 0),
+                        y: e.clientY - (rect?.top ?? 0),
+                        text,
+                      });
+                    }
+                  }}
+                  onMouseLeave={() => setTooltip(null)}
+                  style={{ cursor: 'pointer' }}
+                />
+                {/* Outage hatch overlay */}
+                {showOutages && outageCountryCodes.has(cp.iso) && (
+                  <path
+                    d={cp.path}
+                    fill="url(#outage-hatch)"
+                    stroke="none"
+                    style={{ pointerEvents: 'none' }}
+                  />
+                )}
+              </g>
             ))}
 
             {/* ── SAT BANDS ── */}
@@ -763,8 +1486,56 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
               );
             })}
 
-            {/* ── CABLES ── */}
-            {showCables && CABLES.map(cable => {
+            {/* ── LIVE CABLES from TeleGeography ── */}
+            {showCables && shouldUseLive && liveCables.map((cable, ci) => {
+              const isHovered = hoveredCable === cable.name;
+              return (
+                <g key={`live-${cable.id || ci}`}>
+                  {cable.coordinates.map((lineString, lsi) => {
+                    if (lineString.length < 2) return null;
+                    // Sample every Nth point for performance
+                    const step = Math.max(1, Math.floor(lineString.length / 80));
+                    const sampled = lineString.filter((_, idx) => idx % step === 0 || idx === lineString.length - 1);
+                    const pts = sampled.map(coord => {
+                      const clampedLat = Math.max(-82, Math.min(82, coord[1]));
+                      const [px, py] = m(coord[0], clampedLat);
+                      return `${px.toFixed(1)},${py.toFixed(1)}`;
+                    }).join(' ');
+                    return (
+                      <polyline
+                        key={`ls-${lsi}`}
+                        points={pts}
+                        stroke={cable.color || '#00ccff'}
+                        strokeWidth={isHovered ? 2 : 0.8}
+                        opacity={isHovered ? 0.9 : 0.35}
+                        fill="none"
+                        style={isHovered
+                          ? { filter: `drop-shadow(0 0 3px ${cable.color || '#00ccff'})`, cursor: 'pointer' }
+                          : { cursor: 'pointer' }}
+                        onMouseEnter={e => {
+                          setHoveredCable(cable.name);
+                          const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
+                          setTooltip({
+                            x: e.clientX - (rect?.left ?? 0),
+                            y: e.clientY - (rect?.top ?? 0),
+                            text: `${cable.name} (TeleGeography live data)`,
+                          });
+                        }}
+                        onMouseLeave={() => { setHoveredCable(null); setTooltip(null); }}
+                        onClick={() => setSelectedItem({
+                          type: 'cable', name: cable.name,
+                          detail: `Live submarine cable data from TeleGeography · ${cable.segmentCount} coordinate segments`,
+                          extra: 'Source: submarinecablemap.com — real-time infrastructure mapping',
+                        })}
+                      />
+                    );
+                  })}
+                </g>
+              );
+            })}
+
+            {/* ── SEED CABLES (fallback) ── */}
+            {showCables && !shouldUseLive && activeSeedCables.map(cable => {
               const isHovered = hoveredCable === cable.name;
               const pts = cablePoints(cable.coords);
               const [startLon, startLat] = cable.coords[0];
@@ -808,7 +1579,6 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
               const tgt = getFlowTarget(flow);
               const [sx, sy] = m(srcLon, srcLat);
               const [ex, ey] = m(tgt[0], tgt[1]);
-              // Curve midpoint
               const mx = (sx + ex) / 2;
               const my = Math.min(sy, ey) - Math.abs(ex - sx) * 0.15 - 15;
               const color = VECTOR_COLORS[flow.vector] || '#6b7280';
@@ -828,19 +1598,17 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
                       setTooltip({
                         x: e.clientX - (rect?.left ?? 0),
                         y: e.clientY - (rect?.top ?? 0),
-                        text: `${flow.source_country} → ${flow.vector} · ${flow.event_count.toLocaleString()} events · ${flow.unique_ips} IPs${flow.top_port ? ` · port ${flow.top_port}` : ''}`,
+                        text: `${flow.source_country} > ${flow.vector} · ${flow.event_count.toLocaleString()} events · ${flow.unique_ips} IPs${flow.top_port ? ` · port ${flow.top_port}` : ''}`,
                       });
                     }}
                     onMouseLeave={() => setTooltip(null)}
                     onClick={() => setSelectedItem({
-                      type: 'flow', name: `${flow.source_country} → ${flow.vector}`,
+                      type: 'flow', name: `${flow.source_country} > ${flow.vector}`,
                       detail: `${flow.event_count.toLocaleString()} events · ${flow.unique_ips} unique IPs${flow.top_port ? ` · port ${flow.top_port}` : ''}`,
-                      extra: `Source coordinates: ${flow.avg_lat.toFixed(2)}°, ${flow.avg_lon.toFixed(2)}°`,
+                      extra: `Source coordinates: ${flow.avg_lat.toFixed(2)}, ${flow.avg_lon.toFixed(2)}`,
                     })}
                   />
-                  {/* Arrow head at target */}
                   <circle cx={ex} cy={ey} r={2} fill={color} opacity={0.7} style={{ pointerEvents: 'none' }} />
-                  {/* Source marker */}
                   <circle cx={sx} cy={sy} r={1.5} fill={color} opacity={0.5} style={{ pointerEvents: 'none' }} />
                 </g>
               );
@@ -872,9 +1640,29 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
                   onClick={() => setSelectedItem({
                     type: 'exposure', name: `${ep.ip}:${ep.port}`,
                     detail: `${ep.query.replace(/_/g, ' ')} · ${ep.product || 'unknown service'} · ${ep.org || 'unknown org'} · ${ep.country}`,
-                    extra: ep.vuln_count > 0 ? `⚠ ${ep.vuln_count} known vulnerabilities` : undefined,
+                    extra: ep.vuln_count > 0 ? `${ep.vuln_count} known vulnerabilities` : undefined,
                   })}
                 />
+              );
+            })}
+
+            {/* ── OUTAGE MARKERS on map ── */}
+            {showOutages && iodaOutages.map((outage, i) => {
+              const coords = COUNTRY_COORDS[outage.countryCode];
+              if (!coords) return null;
+              const [px, py] = m(coords[1], coords[0]);
+              const color = severityColor(outage.severity);
+              return (
+                <g key={`outage-marker-${i}`}>
+                  <circle cx={px} cy={py} r={8} fill="none" stroke={color} strokeWidth={1.5} opacity={0.6}>
+                    <animate attributeName="r" values="8;14;8" dur="2s" repeatCount="indefinite" />
+                    <animate attributeName="opacity" values="0.6;0;0.6" dur="2s" repeatCount="indefinite" />
+                  </circle>
+                  <circle cx={px} cy={py} r={4} fill={color} opacity={0.8} />
+                  <text x={px} y={py - 10} textAnchor="middle" fontSize={7} fill={color} fontFamily={C.mono} fontWeight={700}>
+                    {outage.countryCode}
+                  </text>
+                </g>
               );
             })}
 
@@ -924,6 +1712,7 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
               const key      = `${r.provider}-${r.region}`;
               const isHov    = hoveredCloud === key;
               const sz       = 7;
+              const healthBorder = getCloudRegionHealthBorder(r);
               return (
                 <g
                   key={key}
@@ -944,11 +1733,20 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
                     x={px - sz / 2} y={py - sz / 2} width={sz} height={sz}
                     rx={2}
                     fill={`${color}22`}
-                    stroke={color}
+                    stroke={healthBorder}
                     strokeWidth={isHov ? 1.8 : 1}
                     opacity={isHov ? 1 : 0.8}
                     style={isHov ? { filter: `drop-shadow(0 0 3px ${color})` } : undefined}
                   />
+                  {/* Health indicator dot */}
+                  {cloudHealth.loaded && (
+                    <circle
+                      cx={px + sz / 2 + 2} cy={py - sz / 2 - 2} r={2}
+                      fill={healthBorder}
+                      opacity={0.9}
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  )}
                 </g>
               );
             })}
@@ -969,11 +1767,11 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: '12px', fontWeight: 700, color: C.accent, marginBottom: '3px' }}>
-                  {selectedItem.type === 'cable' && '⬡'}
-                  {selectedItem.type === 'ixp'   && '◉'}
-                  {selectedItem.type === 'cloud'  && '▪'}
-                  {selectedItem.type === 'flow'   && '→'}
-                  {selectedItem.type === 'exposure' && '⦿'}
+                  {selectedItem.type === 'cable' && '[CABLE]'}
+                  {selectedItem.type === 'ixp'   && '[IXP]'}
+                  {selectedItem.type === 'cloud'  && '[CLOUD]'}
+                  {selectedItem.type === 'flow'   && '[FLOW]'}
+                  {selectedItem.type === 'exposure' && '[EXPOSURE]'}
                   {' '}{selectedItem.name}
                 </div>
                 <div style={{ fontSize: '11px', color: C.text, marginBottom: '4px' }}>
@@ -1004,11 +1802,276 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
                   fontSize: '14px', cursor: 'pointer', flexShrink: 0,
                 }}
               >
-                ×
+                x
               </button>
             </div>
           </div>
         )}
+
+        {/* ── CLOUD HEALTH & INTERNET HEALTH CARDS ── */}
+        <div style={{ display: 'flex', gap: '10px', marginTop: '10px', flexWrap: 'wrap' }}>
+          {/* ── CLOUD HEALTH CARD ── */}
+          <div style={{
+            flex: '1 1 380px', minWidth: '300px',
+            background: C.panel, border: `1px solid ${C.border}`,
+            borderRadius: '6px', padding: '10px 14px',
+          }}>
+            <div style={{
+              fontSize: '10px', fontWeight: 700, color: C.accent,
+              letterSpacing: '0.08em', marginBottom: '8px',
+              display: 'flex', alignItems: 'center', gap: '6px',
+            }}>
+              CLOUD HEALTH
+              {cloudHealth.loaded && (
+                <span style={{
+                  fontSize: '8px', fontWeight: 400, color: C.muted,
+                  padding: '1px 6px', borderRadius: '3px',
+                  background: 'rgba(255,255,255,0.05)',
+                }}>
+                  {cloudHealth.cfComponents.length} PoPs
+                </span>
+              )}
+            </div>
+
+            {!cloudHealth.loaded ? (
+              <div style={{ fontSize: '10px', color: C.muted }}>Loading cloud health data...</div>
+            ) : (
+              <>
+                {/* Cloudflare PoP summary */}
+                <div style={{ marginBottom: '8px' }}>
+                  <div style={{ fontSize: '9px', color: C.muted, letterSpacing: '0.06em', marginBottom: '4px' }}>
+                    CLOUDFLARE PoP STATUS
+                  </div>
+                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#22c55e' }} />
+                      <span style={{ fontSize: '10px', color: C.text }}>{cloudHealth.cfOperational}</span>
+                      <span style={{ fontSize: '9px', color: C.muted }}>operational</span>
+                    </div>
+                    {cloudHealth.cfDegraded > 0 && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ff9800' }} />
+                        <span style={{ fontSize: '10px', color: '#ff9800', fontWeight: 700 }}>{cloudHealth.cfDegraded}</span>
+                        <span style={{ fontSize: '9px', color: C.muted }}>degraded</span>
+                      </div>
+                    )}
+                    {cloudHealth.cfOutage > 0 && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ef4444' }} />
+                        <span style={{ fontSize: '10px', color: '#ef4444', fontWeight: 700 }}>{cloudHealth.cfOutage}</span>
+                        <span style={{ fontSize: '9px', color: C.muted }}>outage</span>
+                      </div>
+                    )}
+                  </div>
+                  {/* List degraded / outage components */}
+                  {cloudHealth.cfComponents.filter(c => c.status !== 'operational').length > 0 && (
+                    <div style={{ marginTop: '6px', maxHeight: '80px', overflowY: 'auto' }}>
+                      {cloudHealth.cfComponents.filter(c => c.status !== 'operational').slice(0, 8).map((comp, i) => (
+                        <div key={i} style={{
+                          fontSize: '9px', color: comp.status.includes('outage') ? '#ef4444' : '#ff9800',
+                          padding: '1px 0',
+                        }}>
+                          {comp.code} {comp.name.split('(')[0].trim()} — {comp.status.replace(/_/g, ' ')}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* GCP incidents */}
+                <div>
+                  <div style={{ fontSize: '9px', color: C.muted, letterSpacing: '0.06em', marginBottom: '4px' }}>
+                    GCP INCIDENTS ({cloudHealth.gcpIncidents.length})
+                  </div>
+                  {cloudHealth.gcpIncidents.length === 0 ? (
+                    <div style={{ fontSize: '10px', color: '#22c55e' }}>No active incidents</div>
+                  ) : (
+                    <div style={{ maxHeight: '80px', overflowY: 'auto' }}>
+                      {cloudHealth.gcpIncidents.slice(0, 5).map((inc, i) => (
+                        <div key={i} style={{
+                          fontSize: '9px', padding: '3px 0',
+                          borderBottom: '1px solid rgba(255,255,255,0.05)',
+                        }}>
+                          <div style={{
+                            color: inc.severity === 'high' ? '#ef4444' : inc.severity === 'medium' ? '#ff9800' : '#eab308',
+                            fontWeight: 700,
+                          }}>
+                            {inc.service_name} [{inc.severity}]
+                            {!inc.end && <span style={{ color: '#ff1744', marginLeft: '6px' }}>ACTIVE</span>}
+                          </div>
+                          <div style={{ color: C.muted, fontSize: '8px', marginTop: '1px' }}>
+                            {inc.update_text.slice(0, 120)}{inc.update_text.length > 120 ? '...' : ''}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* ── INTERNET HEALTH CARD (IODA) ── */}
+          <div style={{
+            flex: '1 1 380px', minWidth: '300px',
+            background: C.panel, border: `1px solid ${C.border}`,
+            borderRadius: '6px', padding: '10px 14px',
+          }}>
+            <div style={{
+              fontSize: '10px', fontWeight: 700, color: C.accent,
+              letterSpacing: '0.08em', marginBottom: '8px',
+              display: 'flex', alignItems: 'center', gap: '6px',
+            }}>
+              INTERNET HEALTH
+              <span style={{
+                fontSize: '8px', fontWeight: 400, color: C.muted,
+                padding: '1px 6px', borderRadius: '3px',
+                background: 'rgba(255,255,255,0.05)',
+              }}>
+                IODA
+              </span>
+              {iodaOutages.length > 0 && (
+                <span style={{
+                  fontSize: '8px', fontWeight: 700,
+                  padding: '1px 6px', borderRadius: '3px',
+                  background: 'rgba(255,23,68,0.15)',
+                  color: '#ff1744',
+                }}>
+                  {iodaOutages.length} ALERT{iodaOutages.length !== 1 ? 'S' : ''}
+                </span>
+              )}
+            </div>
+
+            {!iodaLoaded ? (
+              <div style={{ fontSize: '10px', color: C.muted }}>Loading IODA outage data...</div>
+            ) : iodaOutages.length === 0 ? (
+              <div style={{ fontSize: '10px', color: '#22c55e' }}>
+                No significant connectivity drops detected in monitored countries
+              </div>
+            ) : (
+              <div style={{ maxHeight: '150px', overflowY: 'auto' }}>
+                {iodaOutages.map((outage, i) => (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'flex-start', gap: '8px',
+                    padding: '5px 0',
+                    borderBottom: '1px solid rgba(255,255,255,0.05)',
+                  }}>
+                    <div style={{
+                      width: '8px', height: '8px', borderRadius: '50%',
+                      background: severityColor(outage.severity),
+                      marginTop: '2px', flexShrink: 0,
+                    }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '10px', color: C.text, fontWeight: 700 }}>
+                        {outage.country}
+                        <span style={{
+                          fontSize: '8px', color: severityColor(outage.severity),
+                          marginLeft: '6px', fontWeight: 400,
+                          padding: '1px 4px', borderRadius: '2px',
+                          background: severityBg(outage.severity),
+                        }}>
+                          {outage.severity.toUpperCase()}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '9px', color: C.muted }}>
+                        {outage.datasource}: {outage.signalDrop}% signal drop from baseline
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{
+              marginTop: '8px', fontSize: '8px', color: C.muted, fontStyle: 'italic',
+            }}>
+              Data: IODA (Internet Outage Detection & Analysis) — BGP, Active Probing, Network Telescope, Google Transparency
+            </div>
+          </div>
+        </div>
+
+        {/* ── ANOMALY CORRELATION CARD ── */}
+        <div style={{
+          marginTop: '10px',
+          background: C.panel, border: `1px solid ${C.border}`,
+          borderRadius: '6px', padding: '10px 14px',
+        }}>
+          <div style={{
+            fontSize: '10px', fontWeight: 700, color: C.accent,
+            letterSpacing: '0.08em', marginBottom: '8px',
+            display: 'flex', alignItems: 'center', gap: '6px',
+          }}>
+            ANOMALY CORRELATION
+            <span style={{
+              fontSize: '8px', fontWeight: 400, color: C.muted,
+              padding: '1px 6px', borderRadius: '3px',
+              background: 'rgba(255,255,255,0.05)',
+            }}>
+              Flow + Outage Cross-Reference
+            </span>
+            {anomalies.filter(a => a.severity === 'critical').length > 0 && (
+              <span style={{
+                fontSize: '8px', fontWeight: 700,
+                padding: '1px 6px', borderRadius: '3px',
+                background: 'rgba(255,23,68,0.15)',
+                color: '#ff1744',
+                border: '1px solid rgba(255,23,68,0.3)',
+              }}>
+                ESCALATION INDICATOR
+              </span>
+            )}
+          </div>
+
+          {anomalies.length === 0 ? (
+            <div style={{ fontSize: '10px', color: C.muted }}>
+              {flows.length === 0
+                ? 'Waiting for flow data to compute correlations...'
+                : 'No correlated anomalies detected — flow volumes within normal parameters'}
+            </div>
+          ) : (
+            <div style={{ maxHeight: '160px', overflowY: 'auto' }}>
+              {anomalies.map((anomaly, i) => (
+                <div key={i} style={{
+                  padding: '6px 8px', marginBottom: '4px',
+                  borderRadius: '4px',
+                  background: severityBg(anomaly.severity),
+                  border: `1px solid ${severityColor(anomaly.severity)}33`,
+                }}>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '3px',
+                  }}>
+                    <div style={{
+                      width: '10px', height: '10px', borderRadius: '50%',
+                      background: severityColor(anomaly.severity),
+                    }} />
+                    <span style={{ fontSize: '10px', color: C.text, fontWeight: 700 }}>
+                      {anomaly.country} ({anomaly.countryCode})
+                    </span>
+                    <span style={{
+                      fontSize: '8px', color: severityColor(anomaly.severity),
+                      padding: '1px 6px', borderRadius: '2px',
+                      background: severityBg(anomaly.severity),
+                      fontWeight: 700,
+                    }}>
+                      {anomaly.severity.toUpperCase()}
+                    </span>
+                    <span style={{ fontSize: '9px', color: C.muted }}>
+                      +{anomaly.flowIncrease}% flow
+                    </span>
+                    {anomaly.outageDetected && (
+                      <span style={{ fontSize: '9px', color: '#ff1744', fontWeight: 700 }}>
+                        + {anomaly.outageSource} instability
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: '9px', color: C.muted, paddingLeft: '18px' }}>
+                    {anomaly.explanation}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* ── LEGEND ── */}
         <div style={{
@@ -1022,16 +2085,24 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
           {showCables && (
             <div>
               <div style={{ fontSize: '8px', color: C.muted, marginBottom: '4px', letterSpacing: '0.08em' }}>
-                SUBMARINE CABLES
+                SUBMARINE CABLES {shouldUseLive ? `(TOP 100 OF ${liveCableCount})` : `(${CABLES.length} SEED)`}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                {CABLES.map(c => (
-                  <div key={c.name} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                    <div style={{ width: '16px', height: '2px', background: c.color, borderRadius: '1px' }} />
-                    <span style={{ fontSize: '8px', color: C.text }}>{c.name}</span>
-                  </div>
-                ))}
-              </div>
+              {!shouldUseLive && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  {CABLES.map(c => (
+                    <div key={c.name} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                      <div style={{ width: '16px', height: '2px', background: c.color, borderRadius: '1px' }} />
+                      <span style={{ fontSize: '8px', color: C.text }}>{c.name}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {shouldUseLive && (
+                <div style={{ fontSize: '8px', color: C.muted }}>
+                  Showing {Math.min(100, liveCables.length)} longest cables of {liveCableCount} total.
+                  Source: TeleGeography
+                </div>
+              )}
             </div>
           )}
 
@@ -1116,6 +2187,29 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
             </div>
           )}
 
+          {/* Outage legend */}
+          {showOutages && (
+            <div>
+              <div style={{ fontSize: '8px', color: C.muted, marginBottom: '4px', letterSpacing: '0.08em' }}>
+                OUTAGE INDICATORS
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#eab308' }} />
+                  <span style={{ fontSize: '8px', color: C.text }}>Watch (15-30% drop)</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ff9800' }} />
+                  <span style={{ fontSize: '8px', color: C.text }}>Warning (30-50% drop)</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ff1744' }} />
+                  <span style={{ fontSize: '8px', color: C.text }}>Critical (&gt;50% drop)</span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Cloud legend */}
           {showCloud && (
             <div>
@@ -1129,6 +2223,11 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
                     <span style={{ fontSize: '8px', color: C.text }}>{p}</span>
                   </div>
                 ))}
+                {cloudHealth.loaded && (
+                  <div style={{ fontSize: '8px', color: C.muted, marginTop: '2px' }}>
+                    Border: <span style={{ color: '#22c55e' }}>green</span>=ok <span style={{ color: '#ff9800' }}>yellow</span>=degraded <span style={{ color: '#ef4444' }}>red</span>=outage
+                  </div>
+                )}
               </div>
             </div>
           )}
