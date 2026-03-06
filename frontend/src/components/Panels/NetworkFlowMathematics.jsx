@@ -84,6 +84,159 @@ function generateVelocityDistribution(n = 500) {
   return packets;
 }
 
+// ─── FLOW TABLE COMPONENT ────────────────────────────────────────────
+function FlowTable({ flowData, sortField, sortDir, onSort }) {
+  if (!flowData) return (
+    <div style={{ padding: "30px", textAlign: "center", color: C.dim, fontFamily: MONO, fontSize: "10px" }}>
+      No real flow data available — connect to backend or check /v1/network/flows
+    </div>
+  );
+
+  const SortHeader = ({ field, label, width }) => (
+    <th onClick={() => onSort(field)} style={{
+      cursor: "pointer", textAlign: "left", padding: "6px 8px", fontSize: "8px",
+      fontFamily: MONO, letterSpacing: "0.1em", color: sortField === field ? C.accent : C.dim,
+      borderBottom: `1px solid ${C.border}`, width, userSelect: "none",
+      background: sortField === field ? `${C.accent}06` : "transparent",
+    }}>
+      {label} {sortField === field ? (sortDir === "asc" ? "▲" : "▼") : ""}
+    </th>
+  );
+
+  return (
+    <div>
+      {/* Top Attackers */}
+      <div style={{ marginBottom: "16px" }}>
+        <div style={{ fontSize: "8px", color: C.dim, letterSpacing: "0.14em", fontFamily: MONO, marginBottom: "6px", paddingBottom: "4px", borderBottom: `1px solid ${C.border}` }}>
+          TOP SOURCE IPs — {flowData.top_sources?.length || 0} OBSERVED
+        </div>
+        <div style={{ maxHeight: "200px", overflowY: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <SortHeader field="ip" label="SOURCE IP" width="140px" />
+                <SortHeader field="country" label="CC" width="40px" />
+                <SortHeader field="vector" label="VECTOR" width="70px" />
+                <SortHeader field="events" label="EVENTS" width="70px" />
+                <SortHeader field="ports_targeted" label="PORTS" width="50px" />
+                <th style={{ padding: "6px 8px", fontSize: "8px", fontFamily: MONO, color: C.dim, borderBottom: `1px solid ${C.border}`, width: "120px" }}>INTENSITY</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(flowData.top_sources || []).slice(0, 15).map((s, i) => {
+                const maxEvents = flowData.top_sources[0]?.events || 1;
+                const pct = (s.events / maxEvents) * 100;
+                return (
+                  <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "4px 8px", fontSize: "10px", fontFamily: MONO, color: C.bright, fontWeight: 600 }}>{s.ip}</td>
+                    <td style={{ padding: "4px 8px", fontSize: "9px", fontFamily: MONO, color: C.dim }}>{s.country || "—"}</td>
+                    <td style={{ padding: "4px 8px" }}>
+                      <span style={{ fontSize: "8px", fontFamily: MONO, padding: "1px 5px", borderRadius: "2px",
+                        background: `${C.accent}10`, color: C.accent, letterSpacing: "0.05em" }}>{s.vector}</span>
+                    </td>
+                    <td style={{ padding: "4px 8px", fontSize: "10px", fontFamily: MONO, color: pct > 70 ? C.drop : pct > 40 ? C.latency : C.text, fontWeight: 600 }}>
+                      {s.events.toLocaleString()}
+                    </td>
+                    <td style={{ padding: "4px 8px", fontSize: "9px", fontFamily: MONO, color: C.dim }}>{s.ports_targeted}</td>
+                    <td style={{ padding: "4px 8px" }}>
+                      <div style={{ position: "relative", height: "6px", background: `${C.border}`, borderRadius: "3px", overflow: "hidden" }}>
+                        <div style={{
+                          width: `${pct}%`, height: "100%", borderRadius: "3px",
+                          background: pct > 70 ? C.drop : pct > 40 ? C.latency : C.throughput,
+                          transition: "width 0.4s ease-out",
+                        }} />
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Top Ports + Countries side by side */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+        <div>
+          <div style={{ fontSize: "8px", color: C.dim, letterSpacing: "0.14em", fontFamily: MONO, marginBottom: "6px", paddingBottom: "4px", borderBottom: `1px solid ${C.border}` }}>
+            TOP TARGET PORTS
+          </div>
+          {(flowData.top_ports || []).slice(0, 10).map((p, i) => {
+            const maxEvt = flowData.top_ports[0]?.events || 1;
+            const pct = (p.events / maxEvt) * 100;
+            const portName = { 22: "SSH", 80: "HTTP", 443: "HTTPS", 3389: "RDP", 53: "DNS", 25: "SMTP", 445: "SMB", 23: "Telnet", 8080: "HTTP-Alt", 21: "FTP" }[p.port] || "";
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "3px 0" }}>
+                <span style={{ fontSize: "10px", fontFamily: MONO, color: C.bright, fontWeight: 600, minWidth: "42px" }}>{p.port}</span>
+                <span style={{ fontSize: "7px", fontFamily: MONO, color: C.dim, minWidth: "36px" }}>{portName}</span>
+                <div style={{ flex: 1, height: "5px", background: C.border, borderRadius: "2px", overflow: "hidden" }}>
+                  <div style={{ width: `${pct}%`, height: "100%", borderRadius: "2px", background: C.lambda, transition: "width 0.4s ease-out" }} />
+                </div>
+                <span style={{ fontSize: "8px", fontFamily: MONO, color: C.dim, minWidth: "46px", textAlign: "right" }}>{p.events.toLocaleString()}</span>
+              </div>
+            );
+          })}
+        </div>
+        <div>
+          <div style={{ fontSize: "8px", color: C.dim, letterSpacing: "0.14em", fontFamily: MONO, marginBottom: "6px", paddingBottom: "4px", borderBottom: `1px solid ${C.border}` }}>
+            TOP SOURCE COUNTRIES
+          </div>
+          {(flowData.top_countries || []).slice(0, 10).map((c, i) => {
+            const maxEvt = flowData.top_countries[0]?.events || 1;
+            const pct = (c.events / maxEvt) * 100;
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "3px 0" }}>
+                <span style={{ fontSize: "10px", fontFamily: MONO, color: C.bright, fontWeight: 600, minWidth: "28px" }}>{c.country}</span>
+                <div style={{ flex: 1, height: "5px", background: C.border, borderRadius: "2px", overflow: "hidden" }}>
+                  <div style={{ width: `${pct}%`, height: "100%", borderRadius: "2px", background: C.rho, transition: "width 0.4s ease-out" }} />
+                </div>
+                <span style={{ fontSize: "8px", fontFamily: MONO, color: C.dim, minWidth: "46px", textAlign: "right" }}>{c.events.toLocaleString()}</span>
+                <span style={{ fontSize: "7px", fontFamily: MONO, color: C.dim }}>{c.unique_ips} IPs</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── TIMELINE SPARKLINE ──────────────────────────────────────────────
+function TimelineSparkline({ timeline, width = 270, height = 50 }) {
+  if (!timeline) return null;
+
+  // Merge all vectors into a single series
+  const hourMap = {};
+  for (const [, points] of Object.entries(timeline)) {
+    for (const pt of points) {
+      hourMap[pt.t] = (hourMap[pt.t] || 0) + pt.events;
+    }
+  }
+  const sorted = Object.entries(hourMap).sort((a, b) => Number(a[0]) - Number(b[0]));
+  if (sorted.length < 2) return null;
+
+  const values = sorted.map(([, v]) => Number(v));
+  const xScale = d3.scaleLinear().domain([0, values.length - 1]).range([4, width - 4]);
+  const yScale = d3.scaleLinear().domain([0, d3.max(values) * 1.1]).range([height - 4, 4]);
+  const area = d3.area().x((_, i) => xScale(i)).y0(height - 4).y1(d => yScale(d)).curve(d3.curveBasis);
+  const line = d3.line().x((_, i) => xScale(i)).y(d => yScale(d)).curve(d3.curveBasis);
+
+  return (
+    <svg width={width} height={height}>
+      <defs>
+        <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={C.accent} stopOpacity="0.2" />
+          <stop offset="100%" stopColor={C.accent} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={area(values)} fill="url(#sparkGrad)" />
+      <path d={line(values)} fill="none" stroke={C.accent} strokeWidth={1.2} />
+      {/* Latest value dot */}
+      <circle cx={xScale(values.length - 1)} cy={yScale(values[values.length - 1])} r={2.5} fill={C.accent} />
+    </svg>
+  );
+}
+
 // Simple DFT for spectral analysis
 function spectralAnalysis(series, maxFreq = 50) {
   const N = series.length;
@@ -523,18 +676,44 @@ export default function NetworkFlowMathematics({ onClose }) {
   const [realFlowData, setRealFlowData] = useState(null);
   const [hawkesParams, setHawkesParams] = useState(null);
   const [dataSource, setDataSource] = useState("loading");
+  const [timeRange, setTimeRange] = useState(24);
+  const [fetchError, setFetchError] = useState(null);
+  const [lastFetchTime, setLastFetchTime] = useState(null);
+  const [tableSortField, setTableSortField] = useState("events");
+  const [tableSortDir, setTableSortDir] = useState("desc");
+
+  const handleTableSort = useCallback((field) => {
+    setTableSortDir(d => tableSortField === field ? (d === "asc" ? "desc" : "asc") : "desc");
+    setTableSortField(field);
+  }, [tableSortField]);
+
+  // Sort flow data for table
+  const sortedFlowData = useMemo(() => {
+    if (!realFlowData) return null;
+    const sorted = { ...realFlowData };
+    if (sorted.top_sources) {
+      sorted.top_sources = [...sorted.top_sources].sort((a, b) => {
+        const av = a[tableSortField], bv = b[tableSortField];
+        if (typeof av === "string") return tableSortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+        return tableSortDir === "asc" ? av - bv : bv - av;
+      });
+    }
+    return sorted;
+  }, [realFlowData, tableSortField, tableSortDir]);
 
   useEffect(() => {
-    fetch("/v1/network/flows?hours=24")
-      .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data) { setRealFlowData(data); setDataSource("live"); } else { setDataSource("synthetic"); } })
-      .catch(() => setDataSource("synthetic"));
+    setDataSource("loading");
+    setFetchError(null);
+    fetch(`/v1/network/flows?hours=${timeRange}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(data => { setRealFlowData(data); setDataSource("live"); setLastFetchTime(new Date()); })
+      .catch(err => { setDataSource("synthetic"); setFetchError(err.message); });
     // Fetch Hawkes params for the dominant vector to seed arrival rate
     fetch("/v1/forecast/series?vector=ssh&days=1")
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data) setHawkesParams(data); })
       .catch(() => {});
-  }, []);
+  }, [timeRange]);
 
   // ─── DERIVE REAL METRICS ──────────────────────────────────────────────
   const realTotalEvents = realFlowData?.vectors?.reduce((s, v) => s + v.events, 0) || 0;
@@ -664,6 +843,7 @@ export default function NetworkFlowMathematics({ onClose }) {
     { id: "spectral", label: "SPECTRAL ANALYSIS", icon: "〰" },
     { id: "capacity", label: "SHANNON CAPACITY", icon: "📡" },
     { id: "fluid", label: "FLOW DYNAMICS", icon: "🌊" },
+    { id: "flows", label: "FLOW TABLE", icon: "📋" },
   ];
 
   const panelStyle = {
@@ -710,10 +890,25 @@ export default function NetworkFlowMathematics({ onClose }) {
             <span style={{ fontSize: "7px", padding: "1px 6px", borderRadius: "2px", fontFamily: MONO, letterSpacing: "0.08em",
               background: dataSource === "live" ? "rgba(0,229,255,0.12)" : dataSource === "synthetic" ? "rgba(255,100,100,0.12)" : "rgba(255,255,255,0.06)",
               color: dataSource === "live" ? "#00e5ff" : dataSource === "synthetic" ? "#ff6464" : C.dim,
-            }}>{dataSource === "live" ? `LIVE · ${realTotalEvents.toLocaleString()} events · ${realUniqueIPs.toLocaleString()} IPs · ${realCountries} countries` : dataSource === "synthetic" ? "SYNTHETIC FALLBACK" : "LOADING..."}</span>
+            }}>
+              {dataSource === "loading" ? "◌ LOADING..." :
+               dataSource === "live" ? `LIVE · ${realTotalEvents.toLocaleString()} events · ${realUniqueIPs.toLocaleString()} IPs · ${realCountries} countries` :
+               `SYNTHETIC${fetchError ? ` · ${fetchError}` : ""}`}
+            </span>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          {/* Time range selector */}
+          <div style={{ display: "flex", gap: "2px", padding: "2px", borderRadius: "4px", background: `${C.border}` }}>
+            {[1, 6, 12, 24, 48].map(h => (
+              <button key={h} onClick={() => setTimeRange(h)} style={{
+                padding: "3px 7px", fontSize: "8px", fontFamily: MONO, border: "none", cursor: "pointer",
+                borderRadius: "3px", letterSpacing: "0.05em",
+                background: timeRange === h ? C.accent + "20" : "transparent",
+                color: timeRange === h ? C.accent : C.dim,
+              }}>{h}H</button>
+            ))}
+          </div>
           <button onClick={() => setIsAnimating(!isAnimating)} style={{
             padding: "5px 12px", borderRadius: "4px", cursor: "pointer",
             background: isAnimating ? `${C.accent}12` : "transparent",

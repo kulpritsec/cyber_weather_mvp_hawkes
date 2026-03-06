@@ -927,18 +927,31 @@ interface CountryData {
 
 function TopCountries({ onCountryClick }: { onCountryClick?: (c: CountryData) => void }) {
   const [countries, setCountries] = useState<CountryData[]>([]);
+  const [countryError, setCountryError] = useState<string | null>(null);
   useEffect(() => {
     const load = async () => {
       try {
         const res = await fetch("/v1/top-countries");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const d = await res.json();
         setCountries(d.countries || []);
-      } catch {}
+        setCountryError(null);
+      } catch (e: any) {
+        setCountryError(e.message || "Failed to fetch");
+      }
     };
     load();
     const id = setInterval(load, 60000);
     return () => clearInterval(id);
   }, []);
+
+  if (countryError && countries.length === 0) {
+    return (
+      <div style={{ fontSize: "9px", color: COLORS.textSecondary, fontFamily: "'JetBrains Mono', monospace", padding: "6px 0" }}>
+        ⚠ {countryError}
+      </div>
+    );
+  }
 
   const max = Math.max(...countries.map(c => c.total), 1);
   return (
@@ -1609,7 +1622,22 @@ export default function CyberWeatherGlobe() {
     return () => window.removeEventListener('keydown', handleKey);
   }, []);
 
-  if (!data) return null;
+  if (!data) return (
+    <div style={{
+      position: "fixed", inset: 0, background: COLORS.bg,
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      fontFamily: "'JetBrains Mono', monospace", color: COLORS.textAccent,
+      zIndex: 9999,
+    }}>
+      <div style={{ fontSize: "14px", letterSpacing: "0.2em", marginBottom: "16px", animation: "pulse 1.5s ease-in-out infinite" }}>
+        ◈ INITIALIZING THREAT GRID
+      </div>
+      <div style={{ fontSize: "9px", color: COLORS.textSecondary, letterSpacing: "0.1em" }}>
+        Fetching nowcast &amp; Hawkes parameters across all vectors...
+      </div>
+      <style>{`@keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }`}</style>
+    </div>
+  );
 
   const sevCfg = SEVERITY_CONFIG[data.global_threat_level];
   const dateStr = clock.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
@@ -2044,9 +2072,28 @@ export default function CyberWeatherGlobe() {
         </div>
         {/* ─── PIPELINE HEALTH ─── */}
         <div style={panelStyle}>
-          <CollapsePanel title={`Pipeline ${data.events_per_second > 0 ? "● LIVE" : "○ STALE"}`} defaultOpen={false}>
-          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "9px", color: COLORS.textSecondary, marginTop: "2px" }}>
-            {data.total_events_24h.toLocaleString()} events / 24h · {data.events_per_second.toFixed(0)} eps
+          <CollapsePanel title={`Pipeline ${eps > 0 ? "● LIVE" : "○ STALE"}`} defaultOpen={false}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "9px", color: COLORS.textSecondary }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+              <span>Events / 24h</span>
+              <span style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{data.total_events_24h.toLocaleString()}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+              <span>Real-time EPS</span>
+              <span style={{ color: eps > 0 ? COLORS.clear : COLORS.warning, fontWeight: 600 }}>{eps}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+              <span>Active vectors</span>
+              <span style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{data.vectors.length}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+              <span>Hotspots tracked</span>
+              <span style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{data.all_hotspots?.length || data.top_threats.length}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>SSE stream</span>
+              <span style={{ color: eps > 0 ? COLORS.clear : COLORS.emergency, fontWeight: 600 }}>{eps > 0 ? "CONNECTED" : "DISCONNECTED"}</span>
+            </div>
           </div>
           </CollapsePanel>
         </div>
