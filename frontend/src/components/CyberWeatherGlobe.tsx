@@ -927,13 +927,18 @@ interface CountryData {
 
 function TopCountries({ onCountryClick }: { onCountryClick?: (c: CountryData) => void }) {
   const [countries, setCountries] = useState<CountryData[]>([]);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   useEffect(() => {
     const load = async () => {
       try {
         const res = await fetch("/v1/top-countries");
+        if (!res.ok) { setFetchError(`HTTP ${res.status}`); return; }
         const d = await res.json();
         setCountries(d.countries || []);
-      } catch {}
+        setFetchError(null);
+      } catch (e: any) {
+        setFetchError(e.message || "Network error");
+      }
     };
     load();
     const id = setInterval(load, 60000);
@@ -943,6 +948,11 @@ function TopCountries({ onCountryClick }: { onCountryClick?: (c: CountryData) =>
   const max = Math.max(...countries.map(c => c.total), 1);
   return (
     <div>
+      {fetchError && countries.length === 0 && (
+        <div style={{ fontSize: "9px", fontFamily: "'JetBrains Mono', monospace", color: "#ff6b6b", padding: "6px 0" }}>
+          Feed unavailable: {fetchError}
+        </div>
+      )}
       {countries.slice(0, 8).map((c, i) => {
         const topVector = Object.entries(c.vectors).sort((a, b) => b[1] - a[1])[0];
         const col = topVector ? (VECTOR_COLORS[topVector[0]] || COLORS.textAccent) : COLORS.textAccent;
@@ -1609,7 +1619,28 @@ export default function CyberWeatherGlobe() {
     return () => window.removeEventListener('keydown', handleKey);
   }, []);
 
-  if (!data) return null;
+  if (!data) return (
+    <div style={{
+      position: "fixed", inset: 0,
+      background: "radial-gradient(ellipse at center, #0a1628 0%, #020810 100%)",
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      fontFamily: "'JetBrains Mono', monospace", color: COLORS.textSecondary,
+    }}>
+      <div style={{ fontSize: "11px", letterSpacing: "0.2em", textTransform: "uppercase", marginBottom: "16px" }}>
+        INITIALIZING THREAT GRID
+      </div>
+      <div style={{
+        width: "120px", height: "2px", background: "rgba(255,255,255,0.05)", borderRadius: "1px", overflow: "hidden",
+      }}>
+        <div style={{
+          width: "40%", height: "100%", background: COLORS.textAccent,
+          animation: "loading-slide 1.2s ease-in-out infinite",
+          borderRadius: "1px",
+        }} />
+      </div>
+      <style>{`@keyframes loading-slide { 0% { transform: translateX(-120px); } 100% { transform: translateX(180px); } }`}</style>
+    </div>
+  );
 
   const sevCfg = SEVERITY_CONFIG[data.global_threat_level];
   const dateStr = clock.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
@@ -2044,9 +2075,28 @@ export default function CyberWeatherGlobe() {
         </div>
         {/* ─── PIPELINE HEALTH ─── */}
         <div style={panelStyle}>
-          <CollapsePanel title={`Pipeline ${data.events_per_second > 0 ? "● LIVE" : "○ STALE"}`} defaultOpen={false}>
-          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "9px", color: COLORS.textSecondary, marginTop: "2px" }}>
-            {data.total_events_24h.toLocaleString()} events / 24h · {data.events_per_second.toFixed(0)} eps
+          <CollapsePanel title={`Pipeline ${eps > 0 ? "● LIVE" : "○ STALE"}`} defaultOpen={false}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "9px", color: COLORS.textSecondary, display: "flex", flexDirection: "column", gap: "4px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Events / 24h</span>
+              <span style={{ color: COLORS.textPrimary }}>{data.total_events_24h.toLocaleString()}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Realtime EPS</span>
+              <span style={{ color: eps > 0 ? "#22c55e" : "#ff6b6b" }}>{eps}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Active Vectors</span>
+              <span style={{ color: COLORS.textPrimary }}>{data.vectors.length}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Hotspots Tracked</span>
+              <span style={{ color: COLORS.textPrimary }}>{data.all_hotspots.length}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>SSE Stream</span>
+              <span style={{ color: eps > 0 ? "#22c55e" : "#ff6b6b" }}>{eps > 0 ? "CONNECTED" : "DISCONNECTED"}</span>
+            </div>
           </div>
           </CollapsePanel>
         </div>
