@@ -1630,10 +1630,10 @@ export default function CyberWeatherGlobe() {
       zIndex: 9999,
     }}>
       <div style={{ fontSize: "14px", letterSpacing: "0.2em", marginBottom: "16px", animation: "pulse 1.5s ease-in-out infinite" }}>
-        ◈ INITIALIZING THREAT GRID
+        INITIALIZING THREAT GRID
       </div>
       <div style={{ fontSize: "9px", color: COLORS.textSecondary, letterSpacing: "0.1em" }}>
-        Fetching nowcast &amp; Hawkes parameters across all vectors...
+        Fetching nowcast & Hawkes parameters across all vectors...
       </div>
       <style>{`@keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }`}</style>
     </div>
