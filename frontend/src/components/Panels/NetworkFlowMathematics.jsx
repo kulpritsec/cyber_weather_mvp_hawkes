@@ -521,42 +521,122 @@ export default function NetworkFlowMathematics({ onClose }) {
 
   // ─── REAL DATA FROM BACKEND ─────────────────────────────────────────
   const [realFlowData, setRealFlowData] = useState(null);
+  const [hawkesParams, setHawkesParams] = useState(null);
+  const [dataSource, setDataSource] = useState("loading");
+
   useEffect(() => {
     fetch("/v1/network/flows?hours=24")
       .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data) setRealFlowData(data); })
+      .then(data => { if (data) { setRealFlowData(data); setDataSource("live"); } else { setDataSource("synthetic"); } })
+      .catch(() => setDataSource("synthetic"));
+    // Fetch Hawkes params for the dominant vector to seed arrival rate
+    fetch("/v1/forecast/series?vector=ssh&days=1")
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data) setHawkesParams(data); })
       .catch(() => {});
   }, []);
 
-  // Computed from real data
+  // ─── DERIVE REAL METRICS ──────────────────────────────────────────────
   const realTotalEvents = realFlowData?.vectors?.reduce((s, v) => s + v.events, 0) || 0;
   const realUniqueIPs = realFlowData?.vectors?.reduce((s, v) => s + v.unique_ips, 0) || 0;
   const realCountries = realFlowData?.top_countries?.length || 0;
   const realTopSource = realFlowData?.top_sources?.[0];
+  const realTopVector = realFlowData?.vectors?.[0];
+
+  // Build real traffic time series from backend timeline data
+  const realTraffic = useMemo(() => {
+    if (!realFlowData?.timeline) return null;
+    // Merge all vectors into a single timeline
+    const hourMap = {};
+    for (const [vec, points] of Object.entries(realFlowData.timeline)) {
+      for (const pt of points) {
+        hourMap[pt.t] = (hourMap[pt.t] || 0) + pt.events;
+      }
+    }
+    const sorted = Object.entries(hourMap).sort((a, b) => Number(a[0]) - Number(b[0]));
+    if (sorted.length < 3) return null;
+    return sorted.map(([t, value], i) => ({
+      t: i * 0.05,
+      value: Number(value),
+      burst: Number(value) > (realTotalEvents / Math.max(sorted.length, 1)) * 2.5,
+    }));
+  }, [realFlowData, realTotalEvents]);
+
+  // Build real port distribution for velocity tab
+  const realPackets = useMemo(() => {
+    if (!realFlowData?.top_ports || realFlowData.top_ports.length === 0) return null;
+    const packets = [];
+    for (const p of realFlowData.top_ports) {
+      // Map port ranges to latency categories (proxy for service type)
+      const source = p.port < 1024 ? "cdn" : p.port < 10000 ? "origin" : "congested";
+      // Generate packets proportional to event count with port-based latency
+      const baseLatency = p.port === 22 ? 12 : p.port === 80 || p.port === 443 ? 8 : p.port === 3389 ? 25 : p.port === 53 ? 5 : 40;
+      for (let i = 0; i < Math.min(p.events, 100); i++) {
+        packets.push({ latency: baseLatency + Math.exp(Math.random() * 2) * (source === "cdn" ? 1 : source === "origin" ? 3 : 8), source });
+      }
+    }
+    return packets.length > 10 ? packets : null;
+  }, [realFlowData]);
+
+  // Compute real arrival rate (events per hour, normalized to ~pkt/s scale for display)
+  const realArrivalRate = useMemo(() => {
+    if (!realFlowData?.vectors) return null;
+    const totalEvents = realFlowData.vectors.reduce((s, v) => s + v.events, 0);
+    const hours = realFlowData.hours || 24;
+    return totalEvents / hours / 3600; // events per second
+  }, [realFlowData]);
+
+  // Hawkes-derived service rate: capacity = baseline * headroom factor
+  const hawkesServiceRate = useMemo(() => {
+    if (!hawkesParams?.params) return null;
+    const baseRate = hawkesParams.params.base_rate_hourly / 3600;
+    return baseRate * 1.8; // 80% headroom above measured baseline
+  }, [hawkesParams]);
 
   const [activeTab, setActiveTab] = useState("queueing");
   const [time, setTime] = useState(0);
   const [isAnimating, setIsAnimating] = useState(true);
   const animRef = useRef(null);
 
-  // Animated parameters
+  // Parameters: prefer real data, fall back to animated synthetic
+  const hasRealData = dataSource === "live" && realArrivalRate !== null;
+  const [syntheticArrival, setSyntheticArrival] = useState(3.2);
+  const baseArrivalRate = hasRealData ? (realArrivalRate > 0 ? realArrivalRate : 0.1) : syntheticArrival;
+  const baseServiceRate = hawkesServiceRate || 5.0;
+
+  // Animated arrival rate: oscillates around the real base rate (or synthetic)
   const [arrivalRate, setArrivalRate] = useState(3.2);
-  const [serviceRate, setServiceRate] = useState(5.0);
-  const [traffic] = useState(() => generateTrafficSeries(200, 5.0));
-  const [packets, setPackets] = useState(() => generateVelocityDistribution(500));
+  const [serviceRate] = useState(5.0);
+  const effectiveServiceRate = hasRealData ? baseServiceRate : serviceRate;
+
+  // Traffic series: prefer real timeline, fall back to synthetic
+  const [syntheticTraffic] = useState(() => generateTrafficSeries(200, 5.0));
+  const traffic = realTraffic || syntheticTraffic;
+
+  // Packets: prefer real port distribution, fall back to synthetic
+  const [syntheticPackets, setSyntheticPackets] = useState(() => generateVelocityDistribution(500));
+  const packets = realPackets || syntheticPackets;
 
   // Derived metrics
-  const qMetrics = useMemo(() => mm1Metrics(arrivalRate, serviceRate), [arrivalRate, serviceRate]);
+  const qMetrics = useMemo(() => mm1Metrics(arrivalRate, effectiveServiceRate), [arrivalRate, effectiveServiceRate]);
   const hurstH = useMemo(() => estimateHurst(traffic.map(t => t.value)), [traffic]);
-  const throughputGbps = useMemo(() => 2.5 + arrivalRate * 0.8 + Math.sin(time / 3) * 0.5, [arrivalRate, time]);
+  const throughputGbps = useMemo(() => {
+    if (hasRealData) {
+      // Scale real events to Gbps analogy (each event ≈ some bandwidth unit)
+      const baseGbps = realTotalEvents / (realFlowData?.hours || 24) / 100;
+      return Math.max(0.1, baseGbps + Math.sin(time / 3) * baseGbps * 0.1);
+    }
+    return 2.5 + arrivalRate * 0.8 + Math.sin(time / 3) * 0.5;
+  }, [arrivalRate, time, hasRealData, realTotalEvents, realFlowData]);
   const burstIndex = useMemo(() => {
     const vals = traffic.map(t => t.value);
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    if (mean === 0) return 1;
     const variance = vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length;
     return variance / mean; // index of dispersion
   }, [traffic]);
 
-  // Animation
+  // Animation: oscillate around real base rate instead of hardcoded sine
   useEffect(() => {
     if (!isAnimating) return;
     let last = performance.now();
@@ -564,18 +644,19 @@ export default function NetworkFlowMathematics({ onClose }) {
       const dt = (now - last) / 1000;
       last = now;
       setTime(t => t + dt);
-      // Drift arrival rate to create dynamic queueing behavior
+      // Drift arrival rate around the real baseline
       setArrivalRate(r => {
-        const target = 3.0 + 1.8 * Math.sin(now / 4000) + 0.5 * Math.sin(now / 1500);
+        const base = hasRealData ? baseArrivalRate : 3.0;
+        const amplitude = hasRealData ? base * 0.3 : 1.8;
+        const target = base + amplitude * Math.sin(now / 4000) + (amplitude * 0.3) * Math.sin(now / 1500);
         return r + (target - r) * 0.02;
       });
-      // Regenerate packets occasionally
-      if (Math.random() < 0.01) setPackets(generateVelocityDistribution(500));
+      if (!hasRealData && Math.random() < 0.01) setSyntheticPackets(generateVelocityDistribution(500));
       animRef.current = requestAnimationFrame(animate);
     };
     animRef.current = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animRef.current);
-  }, [isAnimating]);
+  }, [isAnimating, hasRealData, baseArrivalRate]);
 
   const tabs = [
     { id: "queueing", label: "QUEUEING THEORY", icon: "📊" },
@@ -624,8 +705,12 @@ export default function NetworkFlowMathematics({ onClose }) {
           <div style={{ fontSize: "14px", fontWeight: 800, color: C.bright, letterSpacing: "0.06em" }}>
             NETWORK FLOW MATHEMATICS
           </div>
-          <div style={{ fontSize: "9px", color: C.dim, marginTop: "2px" }}>
-            Queueing Theory · Packet Velocity · Spectral Decomposition · Shannon Capacity · Fluid Dynamics
+          <div style={{ fontSize: "9px", color: C.dim, marginTop: "2px", display: "flex", alignItems: "center", gap: "8px" }}>
+            <span>Queueing Theory · Packet Velocity · Spectral Decomposition · Shannon Capacity · Fluid Dynamics</span>
+            <span style={{ fontSize: "7px", padding: "1px 6px", borderRadius: "2px", fontFamily: MONO, letterSpacing: "0.08em",
+              background: dataSource === "live" ? "rgba(0,229,255,0.12)" : dataSource === "synthetic" ? "rgba(255,100,100,0.12)" : "rgba(255,255,255,0.06)",
+              color: dataSource === "live" ? "#00e5ff" : dataSource === "synthetic" ? "#ff6464" : C.dim,
+            }}>{dataSource === "live" ? `LIVE · ${realTotalEvents.toLocaleString()} events · ${realUniqueIPs.toLocaleString()} IPs · ${realCountries} countries` : dataSource === "synthetic" ? "SYNTHETIC FALLBACK" : "LOADING..."}</span>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -697,7 +782,7 @@ export default function NetworkFlowMathematics({ onClose }) {
                       <span style={{ color: C.dim }}>=</span>
                       <span style={{ fontFamily: MONO, fontSize: "14px", color: C.lambda }}>{arrivalRate.toFixed(2)}</span>
                       <span style={{ color: C.dim }}>/</span>
-                      <span style={{ fontFamily: MONO, fontSize: "14px", color: C.mu }}>{serviceRate.toFixed(2)}</span>
+                      <span style={{ fontFamily: MONO, fontSize: "14px", color: C.mu }}>{effectiveServiceRate.toFixed(2)}</span>
                       <span style={{ color: C.dim }}>=</span>
                       <span style={{
                         fontFamily: MONO, fontSize: "18px", fontWeight: 800,
@@ -714,7 +799,7 @@ export default function NetworkFlowMathematics({ onClose }) {
                       </span>
                     </div>
                   </div>
-                  <QueueingViz arrivalRate={arrivalRate} serviceRate={serviceRate} width={chartWidth} height={180} />
+                  <QueueingViz arrivalRate={arrivalRate} serviceRate={effectiveServiceRate} width={chartWidth} height={180} />
                 </div>
 
                 {/* Little's Law */}
@@ -735,20 +820,24 @@ export default function NetworkFlowMathematics({ onClose }) {
             {activeTab === "velocity" && (
               <div>
                 <div style={{ ...panelStyle, padding: "16px", marginBottom: "12px" }}>
-                  <div style={headerStyle}>PACKET LATENCY DISTRIBUTION — KERNEL DENSITY ESTIMATION</div>
+                  <div style={headerStyle}>PACKET LATENCY DISTRIBUTION — KERNEL DENSITY ESTIMATION {realPackets ? "· FROM CTI PORT DATA" : ""}</div>
                   <div style={{ fontSize: "10px", color: C.text, fontFamily: MONO, lineHeight: 1.6, marginBottom: "8px" }}>
-                    Real network latency is multimodal — CDN-served packets arrive fast and tight (~5-20ms),
-                    origin-server packets have moderate latency (~30-100ms), and congested-path packets show wide,
-                    heavy-tailed distributions (100ms+). The P95 and P99 tail latencies matter more than the mean
-                    for detecting congestion and attack-induced degradation.
+                    {realPackets
+                      ? `Derived from ${realFlowData?.top_ports?.length || 0} active target ports observed across ${realTotalEvents.toLocaleString()} events. Port ranges mapped to service-class latency profiles: well-known ports (<1024) as fast-path, registered ports as standard, high ports as congested/tunneled.`
+                      : "Real network latency is multimodal — CDN-served packets arrive fast and tight (~5-20ms), origin-server packets have moderate latency (~30-100ms), and congested-path packets show wide, heavy-tailed distributions (100ms+). The P95 and P99 tail latencies matter more than the mean for detecting congestion and attack-induced degradation."
+                    }
                   </div>
                   <VelocityDistribution packets={packets} width={chartWidth} height={180} />
                   <div style={{ display: "flex", gap: "12px", marginTop: "8px", flexWrap: "wrap" }}>
-                    {[
+                    {(realPackets ? [
+                      { label: "Well-known ports", color: C.throughput, desc: "Ports <1024 (SSH, HTTP, DNS)" },
+                      { label: "Registered ports", color: C.latency, desc: "Ports 1024-9999 (services)" },
+                      { label: "High/ephemeral", color: C.drop, desc: "Ports 10000+ (tunnels, C2)" },
+                    ] : [
                       { label: "CDN-served", color: C.throughput, desc: "Edge cache hit — minimal hops" },
                       { label: "Origin", color: C.latency, desc: "Full round-trip to origin server" },
                       { label: "Congested", color: C.drop, desc: "Queue buildup or long-haul path" },
-                    ].map(s => (
+                    ]).map(s => (
                       <div key={s.label} style={{ display: "flex", alignItems: "center", gap: "5px" }}>
                         <div style={{ width: "10px", height: "3px", background: s.color, borderRadius: "1px" }} />
                         <span style={{ fontSize: "9px", color: s.color, fontFamily: MONO }}>{s.label}</span>
@@ -780,7 +869,7 @@ export default function NetworkFlowMathematics({ onClose }) {
             {activeTab === "spectral" && (
               <div>
                 <div style={{ ...panelStyle, padding: "16px", marginBottom: "12px" }}>
-                  <div style={headerStyle}>POWER SPECTRAL DENSITY — TRAFFIC SELF-SIMILARITY</div>
+                  <div style={headerStyle}>POWER SPECTRAL DENSITY — TRAFFIC SELF-SIMILARITY {realTraffic ? "· FROM HOURLY EVENT TIMELINE" : ""}</div>
                   <div style={{ fontSize: "10px", color: C.text, fontFamily: MONO, lineHeight: 1.6, marginBottom: "8px" }}>
                     Network traffic is self-similar: it looks bursty at every time scale (ms, seconds, minutes, hours).
                     The power spectrum of self-similar traffic follows a 1/f^β power law — the spectral slope β is
@@ -946,16 +1035,44 @@ export default function NetworkFlowMathematics({ onClose }) {
           {/* ═══ RIGHT: Live Metrics Panel ═══ */}
           <div>
             <div style={{ ...panelStyle, padding: "14px", marginBottom: "12px" }}>
-              <div style={headerStyle}>LIVE NETWORK STATE</div>
+              <div style={headerStyle}>{hasRealData ? "LIVE NETWORK STATE — FROM CTI FEEDS" : "NETWORK STATE — SIMULATED"}</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px" }}>
-                <Gauge value={arrivalRate} min={0} max={8} label="ARRIVAL RATE" symbol="λ" color={C.lambda} unit="pkt/s" />
-                <Gauge value={serviceRate} min={0} max={8} label="SERVICE RATE" symbol="μ" color={C.mu} unit="pkt/s" />
+                <Gauge value={arrivalRate} min={0} max={Math.max(8, arrivalRate * 1.5)} label="ARRIVAL RATE" symbol="λ" color={C.lambda} unit={hasRealData ? "evt/s" : "pkt/s"} />
+                <Gauge value={effectiveServiceRate} min={0} max={Math.max(8, effectiveServiceRate * 1.5)} label="SERVICE RATE" symbol="μ" color={C.mu} unit={hasRealData ? "cap/s" : "pkt/s"} />
                 <Gauge value={qMetrics.rho} min={0} max={1} label="UTILIZATION" symbol="ρ" color={C.rho} unit="" danger={0.85} />
-                <Gauge value={throughputGbps} min={0} max={10} label="THROUGHPUT" symbol="Θ" color={C.throughput} unit="Gbps" />
+                <Gauge value={throughputGbps} min={0} max={Math.max(10, throughputGbps * 1.5)} label="THROUGHPUT" symbol="Θ" color={C.throughput} unit={hasRealData ? "evt/h" : "Gbps"} />
                 <Gauge value={qMetrics.stable ? qMetrics.L : 99} min={0} max={30} label="QUEUE LENGTH" symbol="L" color={C.queue} unit="pkts" danger={15} />
                 <Gauge value={qMetrics.stable ? qMetrics.W * 1000 : 999} min={0} max={500} label="SOJOURN TIME" symbol="W" color={C.latency} unit="ms" danger={200} />
               </div>
             </div>
+
+            {/* Real data summary when available */}
+            {hasRealData && (
+              <div style={{ ...panelStyle, padding: "14px", marginBottom: "12px" }}>
+                <div style={headerStyle}>CTI FEED FLOW SUMMARY (24H)</div>
+                {realFlowData?.vectors?.slice(0, 6).map(v => (
+                  <div key={v.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: `1px solid ${C.border}` }}>
+                    <span style={{ fontSize: "9px", color: C.text, fontFamily: MONO }}>{v.name}</span>
+                    <div style={{ display: "flex", gap: "10px" }}>
+                      <span style={{ fontSize: "8px", color: C.dim, fontFamily: MONO }}>{v.events.toLocaleString()} evt</span>
+                      <span style={{ fontSize: "8px", color: C.dim, fontFamily: MONO }}>{v.unique_ips} IPs</span>
+                      <span style={{ fontSize: "8px", color: C.dim, fontFamily: MONO }}>{v.countries} cc</span>
+                    </div>
+                  </div>
+                ))}
+                {realTopSource && (
+                  <div style={{ marginTop: "8px", padding: "6px 8px", borderRadius: "4px", background: `${C.drop}06`, border: `1px solid ${C.drop}15` }}>
+                    <div style={{ fontSize: "7px", color: C.dim, fontFamily: MONO, letterSpacing: "0.1em" }}>TOP ATTACKER</div>
+                    <div style={{ fontSize: "10px", color: C.drop, fontFamily: MONO, fontWeight: 700, marginTop: "2px" }}>
+                      {realTopSource.ip} <span style={{ color: C.dim, fontWeight: 400 }}>({realTopSource.country})</span>
+                    </div>
+                    <div style={{ fontSize: "8px", color: C.dim, fontFamily: MONO }}>
+                      {realTopSource.events} events · {realTopSource.ports_targeted} ports · {realTopSource.vector}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div style={{ ...panelStyle, padding: "14px", marginBottom: "12px" }}>
               <div style={headerStyle}>BURSTINESS METRICS</div>
