@@ -426,6 +426,33 @@ async function fetchThreatData(): Promise<ThreatData> {
   }
 }
 
+// ─── REGION ZOOM PRESETS ─────────────────────────────────────────────────
+interface RegionPreset {
+  id: string;
+  label: string;
+  icon: string;
+  lat: number;
+  lon: number;
+  zoom: number;     // camera distance (lower = closer)
+  desc: string;
+  color: string;
+}
+
+const REGION_PRESETS: RegionPreset[] = [
+  { id: 'iran',          label: 'Iran / Persian Gulf',    icon: '🇮🇷', lat: 32.4,  lon: 53.7,   zoom: 1.9, desc: 'Iranian cyber operations, Strait of Hormuz, regional infrastructure', color: '#ef4444' },
+  { id: 'ukraine',       label: 'Ukraine / E. Europe',    icon: '🇺🇦', lat: 49.0,  lon: 31.0,   zoom: 2.0, desc: 'Active conflict zone — Russia/Ukraine cyber operations, critical infrastructure targeting', color: '#eab308' },
+  { id: 'china_coast',   label: 'China / Taiwan Strait',  icon: '🇨🇳', lat: 28.0,  lon: 120.0,  zoom: 2.0, desc: 'PRC cyber activity, Taiwan Strait, APT groups (Volt Typhoon, Salt Typhoon)', color: '#f97316' },
+  { id: 'middle_east',   label: 'Middle East',            icon: '🏜️', lat: 28.0,  lon: 44.0,   zoom: 2.2, desc: 'Gulf states, Israel/Palestine, submarine cable landing points, oil infrastructure', color: '#f59e0b' },
+  { id: 'southeast_asia',label: 'Southeast Asia',         icon: '🌏', lat: 8.0,   lon: 108.0,  zoom: 2.2, desc: 'ASEAN nations, submarine cable nexus (Singapore), major IXPs', color: '#22c55e' },
+  { id: 'north_america', label: 'North America',          icon: '🌎', lat: 39.0,  lon: -98.0,  zoom: 2.2, desc: 'US infrastructure, Ashburn IXP, cloud region concentration', color: '#3b82f6' },
+  { id: 'europe',        label: 'Western Europe',         icon: '🌍', lat: 50.0,  lon: 8.0,    zoom: 2.2, desc: 'EU infrastructure, DE-CIX/AMS-IX/LINX, transatlantic cable landings', color: '#6366f1' },
+  { id: 'africa',        label: 'Africa',                 icon: '🌍', lat: 5.0,   lon: 20.0,   zoom: 2.4, desc: 'Emerging threat landscape, 2Africa cable system, developing IXPs', color: '#a855f7' },
+  { id: 'south_america', label: 'South America',          icon: '🌎', lat: -15.0, lon: -55.0,  zoom: 2.4, desc: 'Brazil/São Paulo IX, Curie cable, regional infrastructure', color: '#14b8a6' },
+  { id: 'russia',        label: 'Russia / CIS',           icon: '🇷🇺', lat: 55.0,  lon: 40.0,   zoom: 2.1, desc: 'Russian cyber operations, BGP manipulation, infrastructure isolation', color: '#ef4444' },
+  { id: 'korea',         label: 'Korean Peninsula',       icon: '🇰🇷', lat: 37.0,  lon: 127.5,  zoom: 1.9, desc: 'DPRK cyber operations (Lazarus Group), South Korean infrastructure', color: '#ec4899' },
+  { id: 'india',         label: 'India / South Asia',     icon: '🇮🇳', lat: 22.0,  lon: 78.0,   zoom: 2.2, desc: 'Indian cyber landscape, submarine cable landings, growing threat surface', color: '#f97316' },
+];
+
 // ─── THREE.JS GLOBE ─────────────────────────────────────────────────────
 function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: React.RefObject<HTMLDivElement>, hotspots: Hotspot[], threatLevelRef?: React.RefObject<number>) {
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -436,6 +463,14 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
   const rotRef = useRef({ x: 0.3, y: 0, autoRotate: true, speed: 0.0012, paused: false });
   const arcsGroupRef = useRef<THREE.Group | null>(null);
   const sseEventsRef = useRef<Array<{lat: number; lon: number; srcLat: number; srcLon: number; vector: string; ts: number}>>([]);
+  // Zoom animation state
+  const zoomAnimRef = useRef<{
+    active: boolean;
+    startRotX: number; startRotY: number; startZoom: number;
+    targetRotX: number; targetRotY: number; targetZoom: number;
+    startTime: number; duration: number;
+    regionId: string | null;
+  }>({ active: false, startRotX: 0, startRotY: 0, startZoom: 3.5, targetRotX: 0, targetRotY: 0, targetZoom: 3.5, startTime: 0, duration: 1500, regionId: null });
 
   useEffect(() => {
     if (!canvasRef.current || !containerRef.current) return;
@@ -596,12 +631,50 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
       mouseRef.current.lastY = e.clientY;
     };
     const onWheel = (e: WheelEvent) => {
-      camera.position.z = Math.max(2.5, Math.min(6, camera.position.z + e.deltaY * 0.002));
+      // Enhanced zoom range: 1.6 (close) to 6 (far)
+      camera.position.z = Math.max(1.6, Math.min(6, camera.position.z + e.deltaY * 0.002));
+      // Cancel any active zoom animation when user scrolls
+      zoomAnimRef.current.active = false;
     };
+    // Double-click to zoom into a point on the globe
+    const onDblClick = (e: MouseEvent) => {
+      if (!cameraRef.current) return;
+      const rect = canvas.getBoundingClientRect();
+      const mx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      const my = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(new THREE.Vector2(mx, my), camera);
+      const hits = raycaster.intersectObject(globe, false);
+      if (hits.length > 0) {
+        const point = hits[0].point;
+        // Convert hit point back to lat/lon
+        const r = point.length();
+        const lat = 90 - Math.acos(point.y / r) * (180 / Math.PI);
+        const lon = Math.atan2(point.z, -point.x) * (180 / Math.PI) - 180;
+        const normLon = ((lon + 540) % 360) - 180;
+        // Calculate target rotation to center this point
+        const targetRotY = -normLon * (Math.PI / 180) - Math.PI;
+        const targetRotX = lat * (Math.PI / 180);
+        const za = zoomAnimRef.current;
+        za.active = true;
+        za.startRotX = rotRef.current.x;
+        za.startRotY = rotRef.current.y;
+        za.startZoom = camera.position.z;
+        za.targetRotX = Math.max(-1.2, Math.min(1.2, targetRotX));
+        za.targetRotY = targetRotY;
+        za.targetZoom = Math.max(1.8, camera.position.z * 0.6); // Zoom in 40%
+        za.startTime = Date.now();
+        za.duration = 1200;
+        za.regionId = null;
+        rotRef.current.autoRotate = false;
+      }
+    };
+
     canvas.addEventListener("mousedown", onMouseDown);
     window.addEventListener("mouseup", onMouseUp);
     canvas.addEventListener("mousemove", onMouseMove);
     canvas.addEventListener("wheel", onWheel);
+    canvas.addEventListener("dblclick", onDblClick);
 
     // ─── DAY/NIGHT TERMINATOR ───
     const terminatorGeo = new THREE.SphereGeometry(2.02, 64, 64);
@@ -686,6 +759,23 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
         Math.sin(sunDecl),
         Math.sin(sunAngle) * Math.cos(sunDecl)
       );
+      // ─── ZOOM ANIMATION ───
+      const za = zoomAnimRef.current;
+      if (za.active) {
+        const elapsed = Date.now() - za.startTime;
+        const t = Math.min(elapsed / za.duration, 1);
+        // Smooth ease-in-out (cubic bezier approximation)
+        const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        rotRef.current.x = za.startRotX + (za.targetRotX - za.startRotX) * ease;
+        rotRef.current.y = za.startRotY + (za.targetRotY - za.startRotY) * ease;
+        camera.position.z = za.startZoom + (za.targetZoom - za.startZoom) * ease;
+        if (t >= 1) {
+          za.active = false;
+          // Resume slow auto-rotate after zoom completes
+          rotRef.current.autoRotate = false;
+        }
+      }
+
       const _tl = threatLevelRef?.current || 1;
       const _bg = [0x082a12, 0x081430, 0x1a1808, 0x1c1208, 0x1c0a10];
       renderer.setClearColor(_bg[_tl - 1] || 0x050a12, 1);
@@ -709,6 +799,7 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
       window.removeEventListener("mouseup", onMouseUp);
       canvas.removeEventListener("mousemove", onMouseMove);
       canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("dblclick", onDblClick);
       window.removeEventListener("resize", onResize);
       renderer.dispose();
     };
@@ -876,7 +967,50 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
     })(); // end async wrapper
   }, [hotspots]);
 
-  return { cameraRef, rendererRef, globeRef, arcsGroupRef, rotRef };
+  // ─── ZOOM TO REGION ─────────────────────────────────────────────────
+  const zoomToRegion = useCallback((preset: RegionPreset | null) => {
+    const camera = cameraRef.current;
+    if (!camera) return;
+    const za = zoomAnimRef.current;
+
+    if (!preset) {
+      // Reset to default view
+      za.active = true;
+      za.startRotX = rotRef.current.x;
+      za.startRotY = rotRef.current.y;
+      za.startZoom = camera.position.z;
+      za.targetRotX = 0.3;
+      za.targetRotY = rotRef.current.y; // Keep current Y, just zoom out
+      za.targetZoom = 3.5;
+      za.startTime = Date.now();
+      za.duration = 1200;
+      za.regionId = null;
+      return;
+    }
+
+    // Convert lat/lon to globe rotation targets
+    // rotY rotates around Y axis (longitude), rotX tilts (latitude)
+    const targetRotY = -preset.lon * (Math.PI / 180) - Math.PI;
+    const targetRotX = preset.lat * (Math.PI / 180);
+
+    za.active = true;
+    za.startRotX = rotRef.current.x;
+    za.startRotY = rotRef.current.y;
+    za.startZoom = camera.position.z;
+    za.targetRotX = Math.max(-1.4, Math.min(1.4, targetRotX));
+    // Normalize Y rotation to take shortest path
+    let dy = targetRotY - za.startRotY;
+    while (dy > Math.PI) dy -= 2 * Math.PI;
+    while (dy < -Math.PI) dy += 2 * Math.PI;
+    za.targetRotY = za.startRotY + dy;
+    za.targetZoom = preset.zoom;
+    za.startTime = Date.now();
+    za.duration = 1500;
+    za.regionId = preset.id;
+    rotRef.current.autoRotate = false;
+  }, []);
+
+  return { cameraRef, rendererRef, globeRef, arcsGroupRef, rotRef, zoomToRegion, zoomAnimRef };
 }
 
 // ─── UI COMPONENTS ──────────────────────────────────────────────────────
@@ -1426,7 +1560,9 @@ export default function CyberWeatherGlobe() {
   // Initialize globe — now returns refs for click detection
   const threatLevelRef = useRef<number>(data?.global_threat_level || 1);
   threatLevelRef.current = data?.global_threat_level || 1;
-  const { cameraRef, globeRef, arcsGroupRef, rotRef } = useGlobe(canvasRef, containerRef, data?.all_hotspots || data?.top_threats || [], threatLevelRef);
+  const { cameraRef, globeRef, arcsGroupRef, rotRef, zoomToRegion, zoomAnimRef } = useGlobe(canvasRef, containerRef, data?.all_hotspots || data?.top_threats || [], threatLevelRef);
+  const [activeRegion, setActiveRegion] = useState<string | null>(null);
+  const [showRegionMenu, setShowRegionMenu] = useState(false);
 
   // ─── LIVE ARC SPAWNER: SSE events → animated arcs on globe ───
   useEffect(() => {
@@ -1699,7 +1835,7 @@ export default function CyberWeatherGlobe() {
     // ─── KEYBOARD SHORTCUTS ───────────────────────────────────────────────
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setSelectedArc(null); setSelectedCell(null); setShowContextEngine(false); setShowMathLab(false); setShowInfrastructure(false); setShowThreatIntel(false); setShowFlowMath(false); setShowReplay(false); setShowIOCEnrich(false); setIOCIndicator(""); }
+      if (e.key === 'Escape') { setSelectedArc(null); setSelectedCell(null); setShowContextEngine(false); setShowMathLab(false); setShowInfrastructure(false); setShowThreatIntel(false); setShowFlowMath(false); setShowReplay(false); setShowIOCEnrich(false); setIOCIndicator(""); setShowRegionMenu(false); if (activeRegion) { zoomToRegion(null); setActiveRegion(null); } }
       if (e.key === 'l' || e.key === 'L') setIsLiveMode((v) => !v);
       if (e.key === 'p' || e.key === 'P') setShowPressure((v) => !v);
     };
@@ -2473,43 +2609,196 @@ export default function CyberWeatherGlobe() {
           transform: "translateX(-50%)",
           zIndex: 20,
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
-          gap: "12px",
-          background: "rgba(8,18,38,0.9)",
-          border: "1px solid rgba(0,180,255,0.15)",
-          borderRadius: "8px",
-          padding: "8px 16px",
-          backdropFilter: "blur(12px)",
+          gap: "6px",
           pointerEvents: "auto",
         }}>
-          <button
-            onClick={() => setIsPaused(p => !p)}
-            style={{
-              background: "none",
-              border: "1px solid rgba(0,180,255,0.3)",
-              borderRadius: "4px",
-              color: "#00ccff",
+          {/* Region zoom menu (dropdown above controls) */}
+          {showRegionMenu && (
+            <div style={{
+              background: "rgba(8,15,28,0.97)",
+              border: "1px solid rgba(0,180,255,0.25)",
+              borderRadius: "10px",
+              padding: "10px",
+              backdropFilter: "blur(20px)",
+              boxShadow: "0 8px 40px rgba(0,0,0,0.6)",
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: "4px",
+              maxWidth: "520px",
+              animation: "fadeIn 0.15s ease",
+            }}>
+              {REGION_PRESETS.map(preset => (
+                <button
+                  key={preset.id}
+                  onClick={() => {
+                    zoomToRegion(preset);
+                    setActiveRegion(preset.id);
+                    setShowRegionMenu(false);
+                  }}
+                  title={preset.desc}
+                  style={{
+                    display: "flex", alignItems: "center", gap: "6px",
+                    padding: "6px 10px", borderRadius: "5px",
+                    background: activeRegion === preset.id ? `${preset.color}20` : "rgba(255,255,255,0.03)",
+                    border: `1px solid ${activeRegion === preset.id ? `${preset.color}60` : "rgba(255,255,255,0.06)"}`,
+                    cursor: "pointer", transition: "all 0.15s",
+                    fontFamily: "'JetBrains Mono', monospace",
+                    fontSize: "10px", color: activeRegion === preset.id ? preset.color : "#a0b4c8",
+                    textAlign: "left" as const, letterSpacing: "0.03em",
+                    whiteSpace: "nowrap" as const,
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLButtonElement).style.background = `${preset.color}15`;
+                    (e.currentTarget as HTMLButtonElement).style.borderColor = `${preset.color}40`;
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLButtonElement).style.background = activeRegion === preset.id ? `${preset.color}20` : "rgba(255,255,255,0.03)";
+                    (e.currentTarget as HTMLButtonElement).style.borderColor = activeRegion === preset.id ? `${preset.color}60` : "rgba(255,255,255,0.06)";
+                  }}
+                >
+                  <span style={{ fontSize: "14px" }}>{preset.icon}</span>
+                  <span>{preset.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Active region indicator */}
+          {activeRegion && (
+            <div style={{
+              background: "rgba(8,15,28,0.95)",
+              border: `1px solid ${REGION_PRESETS.find(r => r.id === activeRegion)?.color || "#00ccff"}40`,
+              borderRadius: "6px",
               padding: "4px 12px",
-              cursor: "pointer",
+              backdropFilter: "blur(12px)",
+              display: "flex", alignItems: "center", gap: "8px",
               fontFamily: "'JetBrains Mono', monospace",
-              fontSize: "11px",
-              letterSpacing: "0.1em",
-            }}
-          >
-            {isPaused ? "▶ PLAY" : "❚❚ PAUSE"}
-          </button>
-          <span style={{ color: "#5a7da8", fontSize: "9px", fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.1em" }}>SPEED</span>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            value={Math.round(rotSpeed / 0.005 * 100)}
-            onChange={(e) => setRotSpeed(Number(e.target.value) / 100 * 0.005)}
-            style={{ width: "80px", accentColor: "#00ccff", cursor: "pointer" }}
-          />
-          <span style={{ color: "#e0eaf8", fontSize: "10px", fontFamily: "'JetBrains Mono', monospace", minWidth: "30px" }}>
-            {(rotSpeed * 1000).toFixed(1)}
-          </span>
+              fontSize: "10px",
+              animation: "fadeIn 0.2s ease",
+            }}>
+              <span style={{ fontSize: "14px" }}>{REGION_PRESETS.find(r => r.id === activeRegion)?.icon}</span>
+              <div>
+                <div style={{ color: REGION_PRESETS.find(r => r.id === activeRegion)?.color || "#00ccff", fontWeight: 700, letterSpacing: "0.08em" }}>
+                  {REGION_PRESETS.find(r => r.id === activeRegion)?.label.toUpperCase()}
+                </div>
+                <div style={{ color: "#5a7da8", fontSize: "9px", maxWidth: "320px" }}>
+                  {REGION_PRESETS.find(r => r.id === activeRegion)?.desc}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  zoomToRegion(null);
+                  setActiveRegion(null);
+                }}
+                style={{
+                  background: "none", border: "1px solid rgba(255,255,255,0.15)",
+                  borderRadius: "3px", color: "#5a7da8", cursor: "pointer",
+                  padding: "2px 6px", fontSize: "10px", fontFamily: "'JetBrains Mono', monospace",
+                  marginLeft: "4px",
+                }}
+                title="Reset to global view"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {/* Main controls bar */}
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+            background: "rgba(8,18,38,0.9)",
+            border: "1px solid rgba(0,180,255,0.15)",
+            borderRadius: "8px",
+            padding: "8px 16px",
+            backdropFilter: "blur(12px)",
+          }}>
+            <button
+              onClick={() => setIsPaused(p => !p)}
+              style={{
+                background: "none",
+                border: "1px solid rgba(0,180,255,0.3)",
+                borderRadius: "4px",
+                color: "#00ccff",
+                padding: "4px 12px",
+                cursor: "pointer",
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: "11px",
+                letterSpacing: "0.1em",
+              }}
+            >
+              {isPaused ? "▶ PLAY" : "❚❚ PAUSE"}
+            </button>
+
+            <span style={{ width: "1px", height: "18px", background: "rgba(0,180,255,0.15)" }} />
+
+            {/* Region zoom button */}
+            <button
+              onClick={() => setShowRegionMenu(v => !v)}
+              style={{
+                background: showRegionMenu ? "rgba(0,204,255,0.15)" : "none",
+                border: `1px solid ${showRegionMenu ? "rgba(0,204,255,0.5)" : "rgba(0,180,255,0.3)"}`,
+                borderRadius: "4px",
+                color: showRegionMenu ? "#00e5ff" : "#00ccff",
+                padding: "4px 12px",
+                cursor: "pointer",
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: "11px",
+                letterSpacing: "0.1em",
+                transition: "all 0.15s",
+              }}
+            >
+              🔍 ZOOM REGION
+            </button>
+
+            {/* Reset zoom */}
+            {activeRegion && (
+              <button
+                onClick={() => {
+                  zoomToRegion(null);
+                  setActiveRegion(null);
+                  setShowRegionMenu(false);
+                  setTimeout(() => { rotRef.current.autoRotate = !isPaused; }, 1500);
+                }}
+                style={{
+                  background: "rgba(239,68,68,0.08)",
+                  border: "1px solid rgba(239,68,68,0.3)",
+                  borderRadius: "4px",
+                  color: "#ef4444",
+                  padding: "4px 12px",
+                  cursor: "pointer",
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: "11px",
+                  letterSpacing: "0.1em",
+                  animation: "fadeIn 0.15s ease",
+                }}
+              >
+                ↻ GLOBAL
+              </button>
+            )}
+
+            <span style={{ width: "1px", height: "18px", background: "rgba(0,180,255,0.15)" }} />
+
+            <span style={{ color: "#5a7da8", fontSize: "9px", fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.1em" }}>SPEED</span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={Math.round(rotSpeed / 0.005 * 100)}
+              onChange={(e) => setRotSpeed(Number(e.target.value) / 100 * 0.005)}
+              style={{ width: "80px", accentColor: "#00ccff", cursor: "pointer" }}
+            />
+            <span style={{ color: "#e0eaf8", fontSize: "10px", fontFamily: "'JetBrains Mono', monospace", minWidth: "30px" }}>
+              {(rotSpeed * 1000).toFixed(1)}
+            </span>
+
+            <span style={{ color: "#5a7da8", fontSize: "8px", fontFamily: "'JetBrains Mono', monospace", opacity: 0.6 }}>
+              DBL-CLICK TO ZOOM
+            </span>
+          </div>
         </div>
 
       <style>{`
