@@ -265,7 +265,7 @@ function runSimulation(params: SimulationParams): SimResults {
   const results: SimResults = {};
 
   vectors.forEach(vec => {
-    const hp = hawkesParams[vec] || realParams[vec] || { mu: 2.0, alpha: 1.5, beta: 2.5 };
+    const hp = hawkesParams[vec] || { mu: 2.0, alpha: 1.5, beta: 2.5 };
     const geoMult = geoMultipliers[vec] || 1.0;
     const scExposure = supplyChainExposure[vec] || 0;
     const dailyForecasts: ForecastDayData[] = [];
@@ -690,33 +690,109 @@ interface PredictiveThreatIntelPanelProps {
 export default function PredictiveThreatIntelPanel({ onClose }: PredictiveThreatIntelPanelProps) {
   const [activeTab, setActiveTab] = useState("attack_graph");
 
-  // Fetch real Hawkes params from pipeline
+  // ─── Live data state ──────────────────────────────────────────────
   const [realParams, setRealParams] = useState<{[v: string]: {mu: number; alpha: number; beta: number}}>({});
+  const [advisories, setAdvisories] = useState<any[]>([]);
+  const [nowcastSummary, setNowcastSummary] = useState<{count: number; maxIntensity: number; avgConfidence: number} | null>(null);
+  const [forecastSummary, setForecastSummary] = useState<{count: number; maxIntensity: number; horizon: number} | null>(null);
+  const [activeCovariates, setActiveCovariates] = useState<{events: any[]; groups: any[]; seasonal: Record<string, number>; maxMult: number} | null>(null);
+  const [dataSource, setDataSource] = useState<"loading" | "live" | "seed">("loading");
+
   useEffect(() => {
-    async function loadParams() {
-      const vecs = ["ssh", "rdp", "http", "dns_amp", "botnet_c2", "ransomware"];
-      const params: {[v: string]: {mu: number; alpha: number; beta: number}} = {};
-      for (const v of vecs) {
-        try {
+    let cancelled = false;
+
+    async function fetchAll() {
+      const results = await Promise.allSettled([
+        // Hawkes params per vector
+        Promise.all(["ssh", "rdp", "http", "dns_amp", "botnet_c2", "ransomware"].map(async v => {
           const r = await fetch(`/v1/data?mode=params&vector=${v}&res=2.5`);
           const data = await r.json();
           const feats = data.features || [];
           if (feats.length > 0) {
-            const mus = feats.map((f: any) => f.properties.mu).sort((a: number, b: number) => a - b);
-            const betas = feats.map((f: any) => f.properties.beta).sort((a: number, b: number) => a - b);
-            const nbrs = feats.map((f: any) => f.properties.n_br).sort((a: number, b: number) => a - b);
-            const med = (arr: number[]) => arr[Math.floor(arr.length / 2)];
-            const mu = med(mus);
-            const beta = Math.min(med(betas), 5.0);
-            const alpha = med(nbrs) * beta;
-            params[v] = { mu: Math.min(mu, 2.0), alpha, beta };
+            const med = (arr: number[]) => arr.sort((a: number, b: number) => a - b)[Math.floor(arr.length / 2)];
+            const mu = med(feats.map((f: any) => f.properties.mu));
+            const beta = Math.min(med(feats.map((f: any) => f.properties.beta)), 5.0);
+            const alpha = med(feats.map((f: any) => f.properties.n_br)) * beta;
+            return [v, { mu: Math.min(mu, 2.0), alpha, beta }] as const;
           }
-        } catch {}
+          return null;
+        })),
+        // Advisories (all vectors)
+        fetch("/v1/advisories?vector=ssh").then(r => r.ok ? r.json() : []),
+        // Nowcast summary
+        fetch("/v1/data?mode=nowcast&vector=ssh&res=2.5").then(r => r.ok ? r.json() : null),
+        // Forecast summary
+        fetch("/v1/data?mode=forecast&vector=ssh&res=2.5").then(r => r.ok ? r.json() : null),
+        // Active covariates
+        fetch("/v1/context/active").then(r => r.ok ? r.json() : null),
+      ]);
+
+      if (cancelled) return;
+      let liveCount = 0;
+
+      // Params
+      if (results[0].status === "fulfilled") {
+        const paramEntries = (results[0].value as any[]).filter(Boolean);
+        if (paramEntries.length > 0) {
+          const params: {[v: string]: {mu: number; alpha: number; beta: number}} = {};
+          paramEntries.forEach(([v, p]: any) => { params[v] = p; });
+          setRealParams(params);
+          liveCount++;
+        }
       }
-      setRealParams(params);
+
+      // Advisories
+      if (results[1].status === "fulfilled" && results[1].value) {
+        const advs = Array.isArray(results[1].value) ? results[1].value : [];
+        setAdvisories(advs.slice(0, 8));
+        if (advs.length > 0) liveCount++;
+      }
+
+      // Nowcast
+      if (results[2].status === "fulfilled" && results[2].value?.features) {
+        const feats = results[2].value.features;
+        const intensities = feats.map((f: any) => f.properties.intensity);
+        const confs = feats.map((f: any) => f.properties.confidence);
+        setNowcastSummary({
+          count: feats.length,
+          maxIntensity: Math.max(...intensities),
+          avgConfidence: confs.reduce((a: number, b: number) => a + b, 0) / confs.length,
+        });
+        liveCount++;
+      }
+
+      // Forecast
+      if (results[3].status === "fulfilled" && results[3].value?.features) {
+        const feats = results[3].value.features;
+        const intensities = feats.map((f: any) => f.properties.intensity);
+        setForecastSummary({
+          count: feats.length,
+          maxIntensity: Math.max(...intensities),
+          horizon: feats[0]?.properties?.horizon_h || 24,
+        });
+        liveCount++;
+      }
+
+      // Active covariates
+      if (results[4].status === "fulfilled" && results[4].value) {
+        const data = results[4].value;
+        setActiveCovariates({
+          events: data.active_events || [],
+          groups: data.elevated_groups || [],
+          seasonal: data.seasonal_now || {},
+          maxMult: data.max_context_multiplier || 1.0,
+        });
+        liveCount++;
+      }
+
+      setDataSource(liveCount >= 3 ? "live" : liveCount > 0 ? "live" : "seed");
     }
-    loadParams();
+
+    fetchAll();
+    const interval = setInterval(fetchAll, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
   }, []);
+
   const [observedTechniques, setObservedTechniques] = useState(["T1566", "T1204", "T1059"]);
   const [selectedVendor, setSelectedVendor] = useState<string | null>(null);
   const [simVector, setSimVector] = useState("ssh");
@@ -747,15 +823,20 @@ export default function PredictiveThreatIntelPanel({ onClose }: PredictiveThreat
     return exp;
   }, []);
 
-  const hawkesParams: HawkesParams = useMemo(() => ({
-    ssh: { mu: 2.5, alpha: 2.0, beta: 2.8 },
-    rdp: { mu: 1.8, alpha: 1.6, beta: 2.2 },
-    http: { mu: 3.2, alpha: 2.5, beta: 3.0 },
-    dns_amp: { mu: 1.2, alpha: 1.8, beta: 2.5 },
-    brute_force: { mu: 2.0, alpha: 1.5, beta: 2.0 },
-    botnet_c2: { mu: 1.5, alpha: 2.2, beta: 2.5 },
-    ransomware: { mu: 0.8, alpha: 1.2, beta: 1.5 },
-  }), []);
+  // Merge real DB params over seed defaults — real params take priority
+  const hawkesParams: HawkesParams = useMemo(() => {
+    const seed: HawkesParams = {
+      ssh: { mu: 2.5, alpha: 2.0, beta: 2.8 },
+      rdp: { mu: 1.8, alpha: 1.6, beta: 2.2 },
+      http: { mu: 3.2, alpha: 2.5, beta: 3.0 },
+      dns_amp: { mu: 1.2, alpha: 1.8, beta: 2.5 },
+      brute_force: { mu: 2.0, alpha: 1.5, beta: 2.0 },
+      botnet_c2: { mu: 1.5, alpha: 2.2, beta: 2.5 },
+      ransomware: { mu: 0.8, alpha: 1.2, beta: 1.5 },
+    };
+    // Override seeds with live-fitted params from /v1/data?mode=params
+    return { ...seed, ...realParams };
+  }, [realParams]);
 
   const toggleTechnique = useCallback((id: string) => {
     setObservedTechniques(prev =>
@@ -857,12 +938,23 @@ export default function PredictiveThreatIntelPanel({ onClose }: PredictiveThreat
             </div>
           </div>
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            {dataSource !== "loading" && (
+              <div style={{
+                padding: "4px 10px", borderRadius: "4px",
+                background: dataSource === "live" ? `${C.low}10` : `${C.dim}10`,
+                border: `1px solid ${dataSource === "live" ? C.low + "25" : C.dim + "15"}`,
+              }}>
+                <span style={{ fontSize: "9px", color: dataSource === "live" ? C.low : C.dim, fontWeight: 600 }}>
+                  {dataSource === "live" ? `◉ LIVE — ${Object.keys(realParams).length} vectors fitted` : "◎ SEED DATA"}
+                </span>
+              </div>
+            )}
             <div style={{
               padding: "4px 12px", borderRadius: "4px",
-              background: simResults ? `${C.low}10` : `${C.dim}10`,
-              border: `1px solid ${simResults ? C.low + "25" : C.dim + "15"}`,
+              background: simResults ? `${C.accent}08` : `${C.dim}10`,
+              border: `1px solid ${simResults ? C.accent + "20" : C.dim + "15"}`,
             }}>
-              <span style={{ fontSize: "9px", color: simResults ? C.low : C.dim, fontWeight: 600 }}>
+              <span style={{ fontSize: "9px", color: simResults ? C.accent : C.dim, fontWeight: 600 }}>
                 {simResults ? `${simCount.toLocaleString()} sims · ${simDays}d horizon` : "No simulation"}
               </span>
             </div>
@@ -1145,6 +1237,130 @@ export default function PredictiveThreatIntelPanel({ onClose }: PredictiveThreat
                 </div>
               ))}
             </div>
+
+            {/* Live Advisories */}
+            {advisories.length > 0 && (
+              <div style={{ ...panelStyle, padding: "12px", marginBottom: "10px" }}>
+                <div style={headerStyle}>
+                  LIVE ADVISORIES
+                  <span style={{ marginLeft: "6px", fontSize: "8px", padding: "1px 6px", borderRadius: "8px", background: `${C.critical}12`, color: C.critical, border: `1px solid ${C.critical}25` }}>
+                    {advisories.length}
+                  </span>
+                </div>
+                {advisories.slice(0, 5).map((adv, i) => {
+                  const sevColor = adv.severity >= 5 ? C.critical : adv.severity >= 4 ? C.high : adv.severity >= 3 ? C.medium : C.low;
+                  const sevLabel = adv.severity >= 5 ? "EMERGENCY" : adv.severity >= 4 ? "WARNING" : adv.severity >= 3 ? "WATCH" : "ADVISORY";
+                  return (
+                    <div key={i} style={{
+                      padding: "6px 8px", marginBottom: "4px", borderRadius: "4px",
+                      background: `${sevColor}06`, borderLeft: `2px solid ${sevColor}50`,
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: "8px", fontWeight: 700, color: sevColor }}>{sevLabel}</span>
+                        <span style={{ fontSize: "7px", color: C.dim }}>{adv.vector?.toUpperCase()}</span>
+                      </div>
+                      <div style={{ fontSize: "8px", color: C.text, marginTop: "2px" }}>{adv.title}</div>
+                      {adv.region && (
+                        <div style={{ fontSize: "7px", color: C.dim, marginTop: "1px" }}>Region: {adv.region}</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Nowcast / Forecast Summary */}
+            {(nowcastSummary || forecastSummary) && (
+              <div style={{ ...panelStyle, padding: "12px", marginBottom: "10px" }}>
+                <div style={headerStyle}>HAWKES MODEL STATUS</div>
+                {nowcastSummary && (
+                  <div style={{ marginBottom: "8px" }}>
+                    <div style={{ fontSize: "8px", color: C.accent, letterSpacing: "0.1em", marginBottom: "4px" }}>NOWCAST (SSH)</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "6px" }}>
+                      <div>
+                        <div style={{ fontSize: "7px", color: C.dim }}>CELLS</div>
+                        <div style={{ fontSize: "11px", fontWeight: 700, color: C.bright }}>{nowcastSummary.count}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: "7px", color: C.dim }}>MAX λ</div>
+                        <div style={{ fontSize: "11px", fontWeight: 700, color: C.high }}>{nowcastSummary.maxIntensity.toFixed(2)}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: "7px", color: C.dim }}>AVG CONF</div>
+                        <div style={{ fontSize: "11px", fontWeight: 700, color: C.low }}>{(nowcastSummary.avgConfidence * 100).toFixed(0)}%</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                {forecastSummary && (
+                  <div>
+                    <div style={{ fontSize: "8px", color: C.accent, letterSpacing: "0.1em", marginBottom: "4px" }}>FORECAST ({forecastSummary.horizon}H)</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px" }}>
+                      <div>
+                        <div style={{ fontSize: "7px", color: C.dim }}>CELLS</div>
+                        <div style={{ fontSize: "11px", fontWeight: 700, color: C.bright }}>{forecastSummary.count}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: "7px", color: C.dim }}>MAX λ</div>
+                        <div style={{ fontSize: "11px", fontWeight: 700, color: C.high }}>{forecastSummary.maxIntensity.toFixed(2)}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Active Covariates */}
+            {activeCovariates && (
+              <div style={{ ...panelStyle, padding: "12px", marginBottom: "10px" }}>
+                <div style={headerStyle}>
+                  ACTIVE COVARIATES
+                  <span style={{ marginLeft: "6px", fontSize: "8px", color: activeCovariates.maxMult > 1.2 ? C.high : C.low }}>
+                    max ×{activeCovariates.maxMult.toFixed(2)}
+                  </span>
+                </div>
+                {activeCovariates.events.length > 0 && (
+                  <div style={{ marginBottom: "6px" }}>
+                    <div style={{ fontSize: "7px", color: C.dim, letterSpacing: "0.08em", marginBottom: "3px" }}>ACTIVE EVENTS ({activeCovariates.events.length})</div>
+                    {activeCovariates.events.slice(0, 4).map((ev: any, i: number) => (
+                      <div key={i} style={{ fontSize: "8px", color: C.text, padding: "2px 0", borderBottom: `1px solid ${C.border}` }}>
+                        <span style={{ color: C.accent }}>◈</span> {ev.name}
+                        <span style={{ marginLeft: "4px", color: C.high, fontWeight: 600 }}>w={ev.impact_weight?.toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {activeCovariates.groups.length > 0 && (
+                  <div style={{ marginBottom: "6px" }}>
+                    <div style={{ fontSize: "7px", color: C.dim, letterSpacing: "0.08em", marginBottom: "3px" }}>ELEVATED APT GROUPS ({activeCovariates.groups.length})</div>
+                    {activeCovariates.groups.map((g: any, i: number) => (
+                      <div key={i} style={{ fontSize: "8px", color: C.text, padding: "2px 0", borderBottom: `1px solid ${C.border}` }}>
+                        <span style={{ color: C.critical }}>◉</span> {g.name}
+                        <span style={{ marginLeft: "4px", color: C.dim }}>{g.origin}</span>
+                        <span style={{ marginLeft: "4px", color: C.high, fontWeight: 600 }}>×{g.current_intensity?.toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {Object.keys(activeCovariates.seasonal).length > 0 && (
+                  <div>
+                    <div style={{ fontSize: "7px", color: C.dim, letterSpacing: "0.08em", marginBottom: "3px" }}>SEASONAL S(t) NOW</div>
+                    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                      {Object.entries(activeCovariates.seasonal).map(([v, s]) => (
+                        <span key={v} style={{
+                          fontSize: "8px", padding: "1px 6px", borderRadius: "8px",
+                          background: s > 1.0 ? `${C.high}12` : `${C.low}12`,
+                          color: s > 1.0 ? C.high : C.low,
+                          border: `1px solid ${s > 1.0 ? C.high + "25" : C.low + "25"}`,
+                        }}>
+                          {v}: ×{s.toFixed(2)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div style={{ ...panelStyle, padding: "12px" }}>
               <div style={headerStyle}>SIMULATION MODEL</div>

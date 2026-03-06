@@ -780,37 +780,48 @@ function ForecastTab({ liveData }: { liveData?: LiveForecastData }) {
 
   // Use real μ_base from DB if available, else seed value
   const muBase = liveData?.mu_base ?? 0.22;
-  const forecast = Array.from({ length: DAYS }, (_, i) => {
-    const d = new Date(NOW.getTime() + i * 86400000);
-    const month = d.getMonth();
-    const dow = d.getDay();
-    const s_t = SEASONAL_DATA['ssh'][month];
-    const dow_mult = DOW_MULTIPLIERS[dow].mult;
 
-    // Check if any event is active on this day
-    let eventUplift = 1.0;
-    for (const ev of EVENTS) {
-      const start = new Date(new Date(ev.startDate).getTime() - ev.leadDays * 86400000);
-      const end   = new Date(new Date(ev.endDate).getTime() + ev.lagDays   * 86400000);
-      if (d >= start && d <= end && ev.vectors.includes('ssh')) {
-        eventUplift *= (1 + ev.impactWeight);
-      }
-    }
+  // Prefer live series from backend when available (server computes full μ(t) with covariates)
+  const liveSeries = liveData?.series;
+  const forecast = liveSeries && liveSeries.length >= DAYS
+    ? liveSeries.slice(0, DAYS).map((pt: any, i: number) => ({
+        label: labels[i],
+        mu_base: pt.mu_base ?? muBase,
+        mu_seasonal: pt.mu_seasonal ?? muBase,
+        mu_context: pt.mu_context ?? pt.mu_base ?? muBase,
+        upliftPct: pt.uplift_pct ?? ((pt.mu_context - pt.mu_base) / Math.max(pt.mu_base, 0.001) * 100),
+      }))
+    : Array.from({ length: DAYS }, (_, i) => {
+        const d = new Date(NOW.getTime() + i * 86400000);
+        const month = d.getMonth();
+        const dow = d.getDay();
+        const s_t = SEASONAL_DATA['ssh'][month];
+        const dow_mult = DOW_MULTIPLIERS[dow].mult;
 
-    // Campaign prior (APT28 active in Feb)
-    const apt28 = CAMPAIGN_GROUPS[0].monthlyIntensity[month];
-    const turla  = CAMPAIGN_GROUPS[4].monthlyIntensity[month];
-    const c_t = (apt28 + turla) / 2;
+        // Check if any event is active on this day
+        let eventUplift = 1.0;
+        for (const ev of EVENTS) {
+          const start = new Date(new Date(ev.startDate).getTime() - ev.leadDays * 86400000);
+          const end   = new Date(new Date(ev.endDate).getTime() + ev.lagDays   * 86400000);
+          if (d >= start && d <= end && ev.vectors.includes('ssh')) {
+            eventUplift *= (1 + ev.impactWeight);
+          }
+        }
 
-    const mu_t = muBase * s_t * dow_mult * eventUplift * c_t;
-    return {
-      label: labels[i],
-      mu_base: muBase,
-      mu_seasonal: muBase * s_t * dow_mult,
-      mu_context: mu_t,
-      upliftPct: ((mu_t - muBase) / muBase * 100),
-    };
-  });
+        // Campaign prior (APT28 active in month)
+        const apt28 = CAMPAIGN_GROUPS[0].monthlyIntensity[month];
+        const turla  = CAMPAIGN_GROUPS[4].monthlyIntensity[month];
+        const c_t = (apt28 + turla) / 2;
+
+        const mu_t = muBase * s_t * dow_mult * eventUplift * c_t;
+        return {
+          label: labels[i],
+          mu_base: muBase,
+          mu_seasonal: muBase * s_t * dow_mult,
+          mu_context: mu_t,
+          upliftPct: ((mu_t - muBase) / muBase * 100),
+        };
+      });
 
   const maxMu = Math.max(...forecast.map(f => f.mu_context)) * 1.1;
   const chartH = 120;
@@ -917,10 +928,62 @@ function ForecastTab({ liveData }: { liveData?: LiveForecastData }) {
 }
 
 function BacktestTab() {
-  const best = BACKTEST_MODELS[BACKTEST_MODELS.length - 1];
+  const [liveBacktest, setLiveBacktest] = useState<any>(null);
+
+  useEffect(() => {
+    fetch(`${API}/v1/context/backtest?vector=ssh`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data) setLiveBacktest(data); })
+      .catch(() => {});
+  }, []);
+
+  // Merge live data over seed — live metrics override seed where is_measured=true
+  const MODEL_KEYS = ['baseline_hawkes', 'seasonal_hawkes', 'event_hawkes', 'full_context'];
+  const SEED_MODELS_MAP: Record<string, typeof BACKTEST_MODELS[0]> = {
+    baseline_hawkes: BACKTEST_MODELS[0],
+    seasonal_hawkes: BACKTEST_MODELS[1],
+    event_hawkes: BACKTEST_MODELS[2],
+    full_context: BACKTEST_MODELS[3],
+  };
+
+  const models = MODEL_KEYS.map((key, idx) => {
+    const seed = SEED_MODELS_MAP[key];
+    const live = liveBacktest?.models?.[key];
+    if (live && live.is_measured) {
+      return {
+        model: live.description || seed.model,
+        mape: live.mape ?? seed.mape,
+        coverage: live.coverage_90 ?? seed.coverage,
+        brier: live.brier ?? seed.brier,
+        aic: seed.aic,
+        dm_p: seed.dm_p,
+        color: seed.color,
+        isMeasured: true,
+      };
+    }
+    return { ...seed, isMeasured: false };
+  });
+
+  const best = models[models.length - 1];
+  const isDataDriven = liveBacktest?.data_driven ?? false;
+  const snapshotCount = liveBacktest?.snapshot_count ?? 0;
+  const evalPoints = liveBacktest?.eval_points ?? 0;
 
   return (
     <div>
+      {/* Live data badge */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+        <span style={{
+          padding: '2px 10px', borderRadius: '10px',
+          background: isDataDriven ? 'rgba(34,197,94,0.12)' : 'rgba(90,125,168,0.12)',
+          border: `1px solid ${isDataDriven ? 'rgba(34,197,94,0.4)' : 'rgba(90,125,168,0.3)'}`,
+          color: isDataDriven ? '#22c55e' : '#5a7da8',
+          fontFamily: C.mono, fontSize: '9px', letterSpacing: '0.1em', fontWeight: 700,
+        }}>
+          {isDataDriven ? `◉ DATA-DRIVEN — ${snapshotCount.toLocaleString()} snapshots · ${evalPoints} eval points` : '◎ SEED DATA'}
+        </span>
+      </div>
+
       <div style={{ fontFamily: C.mono, fontSize: '10px', color: C.muted, marginBottom: '16px', lineHeight: 1.6 }}>
         Rolling-origin cross-validation · 90-day train / 30-day forecast / 7-day step · ~47 folds over 12-month holdout.
         DM test vs. baseline Hawkes.
@@ -928,9 +991,9 @@ function BacktestTab() {
 
       {/* Model comparison cards */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
-        {BACKTEST_MODELS.map((m, idx) => {
-          const isBest = idx === BACKTEST_MODELS.length - 1;
-          const mapeImprove = idx > 0 ? ((BACKTEST_MODELS[0].mape - m.mape) / BACKTEST_MODELS[0].mape * 100).toFixed(0) : null;
+        {models.map((m: any, idx: number) => {
+          const isBest = idx === models.length - 1;
+          const mapeImprove = idx > 0 ? ((models[0].mape - m.mape) / models[0].mape * 100).toFixed(0) : null;
 
           return (
             <div
@@ -944,9 +1007,20 @@ function BacktestTab() {
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
-                <span style={{ fontFamily: C.mono, fontSize: '11px', fontWeight: isBest ? 700 : 400, color: isBest ? C.text : C.muted }}>
-                  {m.model}
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ fontFamily: C.mono, fontSize: '11px', fontWeight: isBest ? 700 : 400, color: isBest ? C.text : C.muted }}>
+                    {m.model}
+                  </span>
+                  {m.isMeasured && (
+                    <span style={{
+                      padding: '1px 6px', borderRadius: '8px',
+                      background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.3)',
+                      color: '#22c55e', fontFamily: C.mono, fontSize: '7px', letterSpacing: '0.06em',
+                    }}>
+                      MEASURED
+                    </span>
+                  )}
+                </div>
                 <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                   {isBest && (
                     <span style={{ padding: '2px 8px', borderRadius: '10px', background: 'rgba(99,102,241,0.2)', border: '1px solid rgba(99,102,241,0.4)', color: '#a5b4fc', fontFamily: C.mono, fontSize: '9px' }}>
@@ -971,7 +1045,7 @@ function BacktestTab() {
                   { label: 'MAPE', value: (m.mape * 100).toFixed(0) + '%', target: '< 20%', good: m.mape < 0.20 },
                   { label: '90% COVERAGE', value: (m.coverage * 100).toFixed(0) + '%', target: '≥ 90%', good: m.coverage >= 0.90 },
                   { label: 'BRIER', value: m.brier.toFixed(2), target: '< 0.20', good: m.brier < 0.20 },
-                  { label: 'AIC', value: m.aic.toLocaleString(), target: 'lower better', good: m.aic === Math.min(...BACKTEST_MODELS.map(x => x.aic)) },
+                  { label: 'AIC', value: m.aic.toLocaleString(), target: 'lower better', good: m.aic === Math.min(...models.map((x: any) => x.aic)) },
                 ].map(stat => (
                   <div key={stat.label}>
                     <div style={{ fontFamily: C.mono, fontSize: '8px', color: C.muted, letterSpacing: '0.1em', marginBottom: '3px' }}>{stat.label}</div>
@@ -981,10 +1055,10 @@ function BacktestTab() {
                     {/* Progress bar */}
                     <div style={{ height: '3px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', marginTop: '3px', overflow: 'hidden' }}>
                       <div style={{
-                        width: stat.label === 'MAPE' ? `${100 - m.mape * 200}%`
+                        width: stat.label === 'MAPE' ? `${Math.max(0, 100 - m.mape * 100)}%`
                                : stat.label === '90% COVERAGE' ? `${m.coverage * 100}%`
-                               : stat.label === 'BRIER' ? `${100 - m.brier * 300}%`
-                               : `${100 - (m.aic / 5000) * 100}%`,
+                               : stat.label === 'BRIER' ? `${Math.max(0, 100 - m.brier * 300)}%`
+                               : `${Math.max(0, 100 - (m.aic / 5000) * 100)}%`,
                         height: '100%',
                         background: stat.good ? '#22c55e' : m.color,
                         borderRadius: '2px',
@@ -1003,11 +1077,10 @@ function BacktestTab() {
       {/* Summary insight */}
       <div style={{ padding: '12px 14px', background: 'rgba(34,197,94,0.06)', border: '1px solid rgba(34,197,94,0.2)', borderRadius: '6px' }}>
         <div style={{ fontFamily: C.mono, fontSize: '9px', color: '#86efac', lineHeight: 1.7 }}>
-          <strong>Result:</strong> Full covariate model achieves MAPE {(best.mape * 100).toFixed(0)}% vs baseline {(BACKTEST_MODELS[0].mape * 100).toFixed(0)}%
-          — a {((BACKTEST_MODELS[0].mape - best.mape) / BACKTEST_MODELS[0].mape * 100).toFixed(0)}% reduction.
-          Coverage {(best.coverage * 100).toFixed(0)}% meets the 90% calibration target.
-          DM test p={best.dm_p} confirms the improvement is statistically significant (p&lt;0.05).
-          AIC reduction of {(BACKTEST_MODELS[0].aic - best.aic).toLocaleString()} indicates covariates earn their complexity.
+          <strong>Result:</strong> Full covariate model achieves MAPE {(best.mape * 100).toFixed(0)}% vs baseline {(models[0].mape * 100).toFixed(0)}%
+          — a {((models[0].mape - best.mape) / models[0].mape * 100).toFixed(0)}% reduction.
+          Coverage {(best.coverage * 100).toFixed(0)}% {best.coverage >= 0.90 ? 'meets' : 'approaches'} the 90% calibration target.
+          {isDataDriven && ` Baseline measured over ${evalPoints} evaluation points from ${snapshotCount.toLocaleString()} model snapshots.`}
         </div>
       </div>
     </div>
@@ -1024,7 +1097,7 @@ const TABS = [
   { id: 'backtest',  label: '▣ BACKTEST' },
 ];
 
-const API = import.meta.env.VITE_API_URL ?? '';
+const API = import.meta.env.VITE_API_BASE ?? '';
 
 interface PredictiveContextPanelProps {
   onClose: () => void;
@@ -1047,10 +1120,10 @@ export function PredictiveContextPanel({ onClose }: PredictiveContextPanelProps)
     async function fetchAll() {
       try {
         const [evRes, seaRes, camRes, fcRes] = await Promise.allSettled([
-          fetch(`${API}/api/v1/context/events`),
-          fetch(`${API}/api/v1/context/seasonal`),
-          fetch(`${API}/api/v1/context/campaigns`),
-          fetch(`${API}/api/v1/context/forecast?vector=ssh`),
+          fetch(`${API}/v1/context/events`),
+          fetch(`${API}/v1/context/seasonal`),
+          fetch(`${API}/v1/context/campaigns`),
+          fetch(`${API}/v1/context/forecast?vector=ssh`),
         ]);
 
         if (cancelled) return;

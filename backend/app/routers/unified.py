@@ -913,8 +913,8 @@ _CAMPAIGN_PROFILES = [
 
 
 def _event_active(ev: dict, d: datetime) -> bool:
-    s = datetime.fromisoformat(ev["start_date"]) - timedelta(days=ev["lead_days"])
-    e = datetime.fromisoformat(ev["end_date"]) + timedelta(days=ev["lag_days"])
+    s = datetime.fromisoformat(ev["start_date"]).replace(tzinfo=timezone.utc) - timedelta(days=ev["lead_days"])
+    e = datetime.fromisoformat(ev["end_date"]).replace(tzinfo=timezone.utc) + timedelta(days=ev["lag_days"])
     return s <= d <= e
 
 
