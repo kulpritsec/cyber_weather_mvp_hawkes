@@ -627,9 +627,9 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
 
     // Ensure minimum arc diversity — supplement with synthetic global arcs
     const countryCodes = Object.keys(COUNTRY_CENTROIDS);
-    if (flowData.length < 20) {
+    if (flowData.length < 60) {
       // Generate diverse arcs from random countries to hotspots
-      const needed = 30 - flowData.length;
+      const needed = 80 - flowData.length;
       const vectors = ["ssh", "rdp", "http", "dns_amp", "botnet_c2", "malware"];
       for (let i = 0; i < needed; i++) {
         const srcCC = countryCodes[Math.floor(Math.random() * countryCodes.length)];
@@ -691,7 +691,7 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
       const curve = createArcCurve(src, tgt, R);
       const tubeGeo = new THREE.TubeGeometry(curve, 48, 0.0025, 6, false);
       const col = new THREE.Color(VECTOR_COLORS[src.vector] || COLORS.textAccent);
-      const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.15 });
+      const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.35 });
       const tube = new THREE.Mesh(tubeGeo, mat);
       tube.userData = {
         type: 'arc', clickable: true,
@@ -1226,18 +1226,23 @@ export default function CyberWeatherGlobe() {
             ];
             const tgt = TARGETS[Math.floor(Math.random() * TARGETS.length)];
             sseEventsRef.current.push({ lat: tgt[0], lon: tgt[1], srcLat: ev.lat, srcLon: ev.lon, vector: ev.vector || "ssh", ts: Date.now() });
-            // 50% chance of a reverse arc (target responding / counterattack visual)
-            if (Math.random() < 0.5) {
+            // 70% chance of a reverse arc (target responding / counterattack visual)
+            if (Math.random() < 0.7) {
               const tgt2 = TARGETS[Math.floor(Math.random() * TARGETS.length)];
               sseEventsRef.current.push({ lat: tgt2[0], lon: tgt2[1], srcLat: tgt[0], srcLon: tgt[1], vector: ev.vector || "ssh", ts: Date.now() });
             }
-            // 20% chance of lateral movement arc (target → another target)
-            if (Math.random() < 0.2) {
+            // 40% chance of second arc to different target (multi-target scanning)
+            if (Math.random() < 0.4) {
+              const tgt2b = TARGETS[Math.floor(Math.random() * TARGETS.length)];
+              sseEventsRef.current.push({ lat: tgt2b[0], lon: tgt2b[1], srcLat: ev.lat, srcLon: ev.lon, vector: ev.vector || "ssh", ts: Date.now() });
+            }
+            // 30% chance of lateral movement arc (target → another target)
+            if (Math.random() < 0.3) {
               const src2 = TARGETS[Math.floor(Math.random() * TARGETS.length)];
               const tgt3 = TARGETS[Math.floor(Math.random() * TARGETS.length)];
               sseEventsRef.current.push({ lat: tgt3[0], lon: tgt3[1], srcLat: src2[0], srcLon: src2[1], vector: ev.vector || "ssh", ts: Date.now() });
             }
-            if (sseEventsRef.current.length > 400) sseEventsRef.current = sseEventsRef.current.slice(-300);
+            if (sseEventsRef.current.length > 800) sseEventsRef.current = sseEventsRef.current.slice(-600);
           }
         } catch {}
       };
@@ -1265,8 +1270,8 @@ export default function CyberWeatherGlobe() {
   // ─── LIVE ARC SPAWNER: SSE events → animated arcs on globe ───
   useEffect(() => {
     const R = 1;
-    const MAX_LIVE_ARCS = 250;
-    const ARC_LIFETIME = 4500;
+    const MAX_LIVE_ARCS = 500;
+    const ARC_LIFETIME = 8000;
     type LiveArc = {
       mesh: THREE.Mesh;
       born: number;
@@ -1339,8 +1344,34 @@ export default function CyberWeatherGlobe() {
         }
       }
 
-      // Spawn from SSE buffer (up to 4 per tick for dense visual)
-      const batch = sseEventsRef.current.length > 0 ? sseEventsRef.current.splice(0, 4) : [];
+      // Spawn from SSE buffer (up to 8 per tick for dense visual)
+      let batch = sseEventsRef.current.length > 0 ? sseEventsRef.current.splice(0, 8) : [];
+
+      // Ambient arc generation: keep globe visually active even when SSE is quiet
+      if (batch.length < 3 && liveArcs.length < 80 && Math.random() < 0.4) {
+        const AMBIENT_TARGETS = [
+          [40.71,-74.01],[37.77,-122.42],[51.51,-0.13],[48.86,2.35],[52.52,13.41],
+          [35.68,139.69],[39.91,116.40],[1.35,103.82],[22.32,114.17],[55.76,37.62],
+          [25.20,55.27],[-23.55,-46.63],[28.61,77.21],[19.08,72.88],[37.57,126.98],
+          [-33.87,151.21],[34.05,-118.24],[41.88,-87.63],[47.61,-122.33],[59.33,18.07],
+        ];
+        const AMBIENT_SOURCES = [
+          [55.76,37.62],[39.91,116.40],[31.23,121.47],[51.51,-0.13],[35.68,139.69],
+          [28.61,77.21],[52.52,13.41],[48.86,2.35],[37.57,126.98],[22.32,114.17],
+          [-23.55,-46.63],[25.20,55.27],[30.04,31.24],[14.60,120.98],[19.43,-99.13],
+          [33.89,35.50],[6.52,3.38],[-6.21,106.85],[3.14,101.69],[41.39,2.17],
+        ];
+        const vectors = ["ssh","rdp","http","dns_amp","botnet_c2","malware","brute_force"];
+        const ambientCount = 2 + Math.floor(Math.random() * 3);
+        for (let a = 0; a < ambientCount; a++) {
+          const s = AMBIENT_SOURCES[Math.floor(Math.random() * AMBIENT_SOURCES.length)];
+          const t = AMBIENT_TARGETS[Math.floor(Math.random() * AMBIENT_TARGETS.length)];
+          if (Math.abs(s[0] - t[0]) > 5 || Math.abs(s[1] - t[1]) > 8) {
+            batch.push({ srcLat: s[0], srcLon: s[1], lat: t[0], lon: t[1], vector: vectors[Math.floor(Math.random() * vectors.length)], ts: now });
+          }
+        }
+      }
+
       for (const ev of batch) {
         if (liveArcs.length >= MAX_LIVE_ARCS) break;
         if (Math.abs(ev.srcLat - ev.lat) < 1 && Math.abs(ev.srcLon - ev.lon) < 1) continue;
