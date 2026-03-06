@@ -196,18 +196,40 @@ async def run_fitting_cycle() -> Dict[str, Any]:
         recompute_all_nowcasts(session)
 
         # Write ForecastSnapshot rows for temporal replay
+        # Write ForecastSnapshot rows with covariate multipliers applied
         snap_at = datetime.now(timezone.utc)
         snap_count = 0
+        current_month_idx = snap_at.month - 1  # 0-indexed for seasonal
+        current_month_1 = snap_at.month
+        date_str = snap_at.strftime("%Y-%m-%d")
+
+        # Import covariate helpers from unified router
+        try:
+            from ..routers.unified import (
+                _compute_seasonal, _compute_event_mult, _compute_campaign_mult
+            )
+            covariates_available = True
+        except ImportError:
+            covariates_available = False
+
         params_all = session.query(HawkesParam).all()
         for p in params_all:
             if p.mu and p.mu > 0:
+                s_t = _compute_seasonal(p.vector, current_month_idx) if covariates_available else 1.0
+                e_t = _compute_event_mult(p.vector, date_str) if covariates_available else 1.0
+                c_t = _compute_campaign_mult(p.vector, current_month_1) if covariates_available else 1.0
+                mu_t = p.mu * s_t * e_t * c_t
+
                 snap = ForecastSnapshot(
                     run_id=results["run_id"],
                     grid_id=p.grid_id,
                     vector=p.vector,
                     horizon_h=0,
                     mu_base=p.mu,
-                    mu_t=p.mu,   # covariates applied at query time by the PCE
+                    s_t=s_t,
+                    event_mult=e_t,
+                    campaign_mult=c_t,
+                    mu_t=mu_t,
                     snapshot_at=snap_at,
                 )
                 session.add(snap)

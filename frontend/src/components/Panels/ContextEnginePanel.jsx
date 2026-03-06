@@ -191,8 +191,9 @@ function CampaignRecurrenceChart({ width = 540, height = 280 }) {
 }
 
 // ─── BACKTEST COMPARISON ───────────────────────────────────────────────
-function BacktestComparison({ width = 540 }) {
-  const models = Object.entries(BACKTEST_RESULTS);
+function BacktestComparison({ width = 540, results = null }) {
+  const source = results || BACKTEST_RESULTS;
+  const models = Object.entries(source);
   const best = models.reduce((a, b) => a[1].mape < b[1].mape ? a : b);
   return (
     <div>
@@ -202,7 +203,7 @@ function BacktestComparison({ width = 540 }) {
           <div key={key} style={{ padding: "10px 12px", marginBottom: "6px", borderRadius: "4px", background: isBest ? `${C.clear}08` : "rgba(255,255,255,0.02)", border: `1px solid ${isBest ? C.clear + "30" : C.border}` }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
               <div><span style={{ fontSize: "11px", fontFamily: MONO, color: C.bright, fontWeight: 600 }}>{m.description}</span>{isBest && <span style={{ fontSize: "8px", fontFamily: MONO, color: C.clear, marginLeft: "8px", padding: "1px 6px", background: `${C.clear}15`, borderRadius: "2px" }}>BEST</span>}</div>
-              <span style={{ fontSize: "9px", fontFamily: MONO, color: C.dim }}>AIC: {m.aic}</span>
+              <span style={{ fontSize: "9px", fontFamily: MONO, color: C.dim }}>{m.aic ? `AIC: ${m.aic}` : ""}{m.is_measured ? " · MEASURED" : ""}</span>
             </div>
             <div style={{ display: "flex", gap: "16px" }}>
               <div style={{ flex: 1 }}><div style={{ fontSize: "7px", color: C.dim, fontFamily: MONO, letterSpacing: "0.1em", marginBottom: "3px" }}>MAPE: {(m.mape * 100).toFixed(1)}%</div><div style={{ height: "4px", background: "rgba(255,255,255,0.05)", borderRadius: "2px" }}><div style={{ height: "100%", width: `${(1 - m.mape) * 100}%`, background: isBest ? C.clear : C.accent, borderRadius: "2px", opacity: 0.7 }} /></div></div>
@@ -283,34 +284,60 @@ export default function ContextEnginePanel({ onClose }) {
   // Fetch real forecast data from backend
   const [forecastData, setForecastData] = useState([]);
   const [forecastParams, setForecastParams] = useState(null);
+  const [dataSource, setDataSource] = useState("loading"); // "live" | "synthetic" | "loading"
+  const [covariatesApplied, setCovariatesApplied] = useState(false);
+
+  // Fetch events + campaigns from backend APIs (single source of truth)
+  const [backendEvents, setBackendEvents] = useState(null);
+  const [backendCampaigns, setBackendCampaigns] = useState(null);
+  const [backtestResults, setBacktestResults] = useState(null);
+
+  useEffect(() => {
+    fetch("/v1/context/events").then(r => r.json()).then(d => setBackendEvents(d.events)).catch(() => {});
+    fetch("/v1/context/campaigns").then(r => r.json()).then(d => setBackendCampaigns(d.campaigns)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetch(`/v1/context/backtest?vector=${selectedVector}`).then(r => r.json()).then(d => setBacktestResults(d)).catch(() => {});
+  }, [selectedVector]);
+
   useEffect(() => {
     let cancelled = false;
+    setDataSource("loading");
     async function loadForecast() {
       try {
         const r = await fetch(`/v1/forecast/series?vector=${selectedVector}&days=${Math.max(forecastHorizon, 6)}`);
         if (!r.ok) throw new Error("fetch failed");
         const data = await r.json();
         if (cancelled) return;
-        // Combine history + forecast into the shape ForecastChart expects
         const combined = [
           ...data.history.map(h => ({ ...h, isForecast: false, lower: h.value, upper: h.value })),
           ...data.forecast,
         ];
         setForecastData(combined);
         setForecastParams(data.params);
+        setCovariatesApplied(!!data.covariates_applied);
+        setDataSource("live");
       } catch {
-        // Fall back to synthetic on error
-        if (!cancelled) setForecastData(generateForecastSeries(forecastHorizon, selectedVector));
+        if (!cancelled) {
+          setForecastData(generateForecastSeries(forecastHorizon, selectedVector));
+          setCovariatesApplied(false);
+          setDataSource("synthetic");
+        }
       }
     }
     loadForecast();
     return () => { cancelled = true; };
   }, [forecastHorizon, selectedVector]);
 
+  // Use backend events if available, otherwise fall back to hardcoded
+  const resolvedEvents = backendEvents || EVENT_CALENDAR;
+  const resolvedCampaigns = backendCampaigns || CAMPAIGN_RECURRENCE;
+
   const today = new Date().toISOString().slice(0, 10);
-  const activeEvents = EVENT_CALENDAR.filter(e => e.start !== "recurring-monthly" && today >= e.start && today <= e.end);
-  const upcomingEvents = EVENT_CALENDAR.filter(e => e.start !== "recurring-monthly" && e.start > today).sort((a, b) => a.start.localeCompare(b.start)).slice(0, 8);
-  const filteredEvents = eventFilter === "all" ? EVENT_CALENDAR.filter(e => e.start !== "recurring-monthly") : EVENT_CALENDAR.filter(e => e.category === eventFilter && e.start !== "recurring-monthly");
+  const activeEvents = resolvedEvents.filter(e => e.start !== "recurring-monthly" && today >= e.start && today <= e.end);
+  const upcomingEvents = resolvedEvents.filter(e => e.start !== "recurring-monthly" && e.start > today).sort((a, b) => a.start.localeCompare(b.start)).slice(0, 8);
+  const filteredEvents = eventFilter === "all" ? resolvedEvents.filter(e => e.start !== "recurring-monthly") : resolvedEvents.filter(e => e.category === eventFilter && e.start !== "recurring-monthly");
 
   const tabs = [
     { id: "forecast", label: "COVARIATE FORECAST", icon: "📈" },
@@ -358,6 +385,9 @@ export default function ContextEnginePanel({ onClose }) {
             ))}
           </div>
           {activeEvents.length > 0 && <div style={{ padding: "4px 12px", borderRadius: "4px", background: `${C.emergency}12`, border: `1px solid ${C.emergency}30`, fontSize: "9px", color: C.emergency, fontWeight: 700, animation: "pulse-dot 2s infinite" }}>{activeEvents.length} ACTIVE</div>}
+          <div style={{ padding: "4px 10px", borderRadius: "4px", fontSize: "8px", fontFamily: MONO, fontWeight: 600, background: dataSource === "live" ? `${C.clear}12` : dataSource === "synthetic" ? `${C.warning}12` : `${C.dim}12`, border: `1px solid ${dataSource === "live" ? C.clear + "30" : dataSource === "synthetic" ? C.warning + "30" : C.dim + "30"}`, color: dataSource === "live" ? C.clear : dataSource === "synthetic" ? C.warning : C.dim }}>
+            {dataSource === "live" ? (covariatesApplied ? "LIVE · COVARIATES" : "LIVE") : dataSource === "synthetic" ? "SYNTHETIC FALLBACK" : "LOADING..."}
+          </div>
           {onClose && <button onClick={onClose} style={{ padding: "5px 10px", borderRadius: "4px", cursor: "pointer", background: "rgba(255,255,255,0.04)", border: `1px solid ${C.border}`, color: C.dim, fontFamily: MONO, fontSize: "12px", fontWeight: 700 }}>✕</button>}
         </div>
       </div>
@@ -379,7 +409,7 @@ export default function ContextEnginePanel({ onClose }) {
             <CovariateFormula />
             <div style={{ ...panelStyle, padding: "16px", marginBottom: "12px" }}>
               <div style={headerStyle}>COVARIATE-ENHANCED FORECAST · {selectedVector.toUpperCase()} · {forecastHorizon}-MONTH HORIZON</div>
-              <ForecastChart data={forecastData} events={EVENT_CALENDAR} width={chartWidth} height={240} vector={selectedVector} />
+              <ForecastChart data={forecastData} events={resolvedEvents} width={chartWidth} height={240} vector={selectedVector} />
               <div style={{ display: "flex", gap: "16px", marginTop: "12px", flexWrap: "wrap" }}>
                 {[{ color: C[selectedVector], label: "Historical / Forecast" }, { color: C[selectedVector], label: "90% CI", opacity: 0.15 }, { color: C.event, label: "Sporting" }, { color: C.warning, label: "Commerce" }, { color: C.emergency, label: "Geopolitical" }, { color: C.vuln, label: "Vulnerability" }, { color: C.seasonal, label: "Holiday" }].map((item, i) => (
                   <div key={i} style={{ display: "flex", alignItems: "center", gap: "4px" }}><div style={{ width: "12px", height: "2px", background: item.color, borderRadius: "1px", opacity: item.opacity || 0.7 }} /><span style={{ fontSize: "8px", color: C.dim, fontFamily: MONO }}>{item.label}</span></div>
@@ -475,15 +505,28 @@ export default function ContextEnginePanel({ onClose }) {
         {activeTab === "backtest" && (
           <div>
             <div style={{ ...panelStyle, padding: "16px", marginBottom: "12px" }}>
-              <div style={headerStyle}>MODEL COMPARISON · BACKTESTING RESULTS ON 12-MONTH HOLDOUT</div>
-              <div style={{ fontSize: "10px", color: C.text, lineHeight: 1.6, marginBottom: "14px" }}>Four model variants backtested. Metrics: MAPE (lower better), 90% CI Coverage (target 0.90), Brier (calibration, lower better), AIC (fit parsimony, lower better).</div>
-              <BacktestComparison width={chartWidth} />
+              <div style={headerStyle}>MODEL COMPARISON · BACKTESTING RESULTS ON 12-MONTH HOLDOUT{backtestResults?.data_driven ? " · DATA-DRIVEN" : " · ANALYTICAL ESTIMATES"}</div>
+              <div style={{ fontSize: "10px", color: C.text, lineHeight: 1.6, marginBottom: "14px" }}>
+                {backtestResults?.data_driven
+                  ? `Real backtesting from ${backtestResults.eval_points} evaluation points across ${backtestResults.snapshot_count} forecast snapshots.`
+                  : "Four model variants compared. Metrics derived from Hawkes parameter stability. Will upgrade to measured values as forecast snapshots accumulate."}
+                {" "}Metrics: MAPE (lower better), 90% CI Coverage (target 0.90), Brier (calibration, lower better).
+              </div>
+              <BacktestComparison width={chartWidth} results={backtestResults?.models} />
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
               <div style={{ ...panelStyle, padding: "14px" }}>
                 <div style={headerStyle}>IMPROVEMENT SUMMARY</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-                  {[{ label: "MAPE Reduction", value: "48%", sub: "vs. baseline Hawkes", color: C.clear }, { label: "CI Coverage", value: "91%", sub: "target: 90%", color: C.clear }, { label: "Brier Improvement", value: "42%", sub: "severity prediction", color: C.clear }, { label: "AIC Improvement", value: "650", sub: "points lower", color: C.accent }].map((s, i) => (
+                  {(() => {
+                    const src = backtestResults?.models || BACKTEST_RESULTS;
+                    const bl = src.baseline_hawkes || {};
+                    const fc = src.full_context || {};
+                    const mapeRedPct = bl.mape && fc.mape ? Math.round((1 - fc.mape / bl.mape) * 100) : 48;
+                    const ciCov = fc.coverage_90 ? Math.round(fc.coverage_90 * 100) : 91;
+                    const brierRedPct = bl.brier && fc.brier ? Math.round((1 - fc.brier / bl.brier) * 100) : 42;
+                    return [{ label: "MAPE Reduction", value: `${mapeRedPct}%`, sub: "vs. baseline Hawkes", color: C.clear }, { label: "CI Coverage", value: `${ciCov}%`, sub: "target: 90%", color: C.clear }, { label: "Brier Improvement", value: `${brierRedPct}%`, sub: "severity prediction", color: C.clear }];
+                  })().map((s, i) => (
                     <div key={i} style={{ padding: "8px", background: "rgba(255,255,255,0.02)", borderRadius: "4px", textAlign: "center" }}>
                       <div style={{ fontSize: "7px", color: C.dim, letterSpacing: "0.1em", marginBottom: "2px" }}>{s.label}</div>
                       <div style={{ fontSize: "20px", fontWeight: 800, color: s.color, fontFamily: MONO }}>{s.value}</div>

@@ -86,18 +86,19 @@ def _extract_attack_ids(pulse: Dict[str, Any]) -> List[str]:
 async def ingest(session: Session, hours_back: int = 24) -> int:
     """
     Ingest recent OTX pulse indicators.
-    
+
     Strategy:
-    1. Fetch recent pulses modified in last N hours
-    2. For each pulse, extract indicators
+    1. Fetch recent pulses from both /subscribed and /activity (last 7 days)
+    2. For each pulse, fetch full indicators via /indicators endpoint
     3. Geolocate IPv4/IPv6 indicators
     4. Map to events with vector classification
-    
+
+    Target: 200+ events per cycle.
     Returns count of new events inserted.
     """
     settings = get_settings()
     api_key = getattr(settings, "otx_api_key", None) or getattr(settings, "alienvault_otx_api_key", None)
-    
+
     if not api_key:
         logger.warning("OTX API key not configured — skipping OTX ingest. "
                        "Set CYBER_WEATHER_OTX_API_KEY in .env")
@@ -109,99 +110,128 @@ async def ingest(session: Session, hours_back: int = 24) -> int:
         "Accept": "application/json",
     }
 
-    since = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+    # Look back 7 days for more coverage
+    since = datetime.now(timezone.utc) - timedelta(days=7)
     since_str = since.strftime("%Y-%m-%dT%H:%M:%S+00:00")
-    
+
     events_created = 0
     pulses_processed = 0
+    indicators_geolocated = 0
     errors = []
 
     try:
-        timeout = aiohttp.ClientTimeout(total=60)
+        timeout = aiohttp.ClientTimeout(total=120)
         async with aiohttp.ClientSession(timeout=timeout) as http:
-            # Fetch recent pulses (subscribed + all recent)
-            # /pulses/subscribed gives pulses from groups you follow
-            # /pulses/activity gives broader recent activity
-            page = 1
-            max_pages = 5  # Cap to avoid runaway pagination
             all_indicators = []
+            pulse_ids_seen = set()
 
-            while page <= max_pages:
-                url = f"{base_url}/pulses/activity"
-                params = {
-                    "modified_since": since_str,
-                    "page": page,
-                    "limit": 50,
-                }
+            # Fetch from BOTH endpoints for maximum coverage
+            endpoints = [
+                (f"{base_url}/pulses/subscribed", "subscribed"),
+                (f"{base_url}/pulses/activity", "activity"),
+            ]
 
-                try:
-                    async with http.get(url, headers=headers, params=params) as resp:
-                        if resp.status == 403:
-                            logger.error("OTX API key invalid or expired")
-                            return 0
-                        if resp.status == 429:
-                            logger.warning("OTX rate limited — backing off")
-                            await asyncio.sleep(30)
-                            continue
-                        if resp.status != 200:
-                            logger.error(f"OTX API returned {resp.status}")
-                            return 0
+            for endpoint_url, endpoint_name in endpoints:
+                page = 1
+                max_pages = 10  # Increased from 5
 
-                        data = await resp.json()
-                        pulses = data.get("results", [])
+                while page <= max_pages:
+                    params = {
+                        "modified_since": since_str,
+                        "page": page,
+                        "limit": 50,
+                    }
 
-                        if not pulses:
-                            break
+                    try:
+                        async with http.get(endpoint_url, headers=headers, params=params) as resp:
+                            if resp.status == 403:
+                                logger.error(f"OTX API key invalid ({endpoint_name})")
+                                break
+                            if resp.status == 429:
+                                logger.warning("OTX rate limited — backing off")
+                                await asyncio.sleep(30)
+                                continue
+                            if resp.status != 200:
+                                logger.warning(f"OTX {endpoint_name} returned {resp.status}")
+                                break
 
-                        for pulse in pulses:
-                            pulse_id = pulse.get("id", "unknown")
-                            pulse_name = pulse.get("name", "")
-                            pulse_tags = pulse.get("tags", [])
-                            attack_ids = _extract_attack_ids(pulse)
-                            created = pulse.get("created", "")
-                            modified = pulse.get("modified", "")
-                            adversary = pulse.get("adversary", "")
-                            targeted_countries = pulse.get("targeted_countries", [])
-                            malware_families = pulse.get("malware_families", [])
+                            data = await resp.json()
+                            pulses = data.get("results", [])
 
-                            indicators = pulse.get("indicators", [])
-                            for indicator in indicators:
-                                ioc_type = indicator.get("type", "")
-                                ioc_value = indicator.get("indicator", "")
-                                ioc_title = indicator.get("title", "")
-                                ioc_created = indicator.get("created", "")
+                            if not pulses:
+                                break
 
-                                if not ioc_value:
+                            for pulse in pulses:
+                                pulse_id = pulse.get("id", "unknown")
+                                if pulse_id in pulse_ids_seen:
                                     continue
+                                pulse_ids_seen.add(pulse_id)
 
-                                all_indicators.append({
-                                    "type": ioc_type,
-                                    "value": ioc_value,
-                                    "title": ioc_title,
-                                    "created": ioc_created,
-                                    "pulse_id": pulse_id,
-                                    "pulse_name": pulse_name,
-                                    "pulse_tags": pulse_tags,
-                                    "attack_ids": attack_ids,
-                                    "adversary": adversary,
-                                    "targeted_countries": targeted_countries,
-                                    "malware_families": [m.get("display_name", str(m)) 
-                                                         if isinstance(m, dict) else str(m) 
-                                                         for m in malware_families],
-                                })
+                                pulse_name = pulse.get("name", "")
+                                pulse_tags = pulse.get("tags", [])
+                                attack_ids = _extract_attack_ids(pulse)
+                                adversary = pulse.get("adversary", "")
+                                targeted_countries = pulse.get("targeted_countries", [])
+                                malware_families = pulse.get("malware_families", [])
 
-                            pulses_processed += 1
+                                # Get indicators from the pulse itself
+                                indicators = pulse.get("indicators", [])
 
-                        # Check if more pages
-                        if data.get("next"):
-                            page += 1
-                        else:
-                            break
+                                # If pulse has few indicators, fetch full indicator list
+                                if len(indicators) < 5:
+                                    try:
+                                        ind_url = f"{base_url}/pulses/{pulse_id}/indicators"
+                                        async with http.get(ind_url, headers=headers, params={"limit": 100}) as ind_resp:
+                                            if ind_resp.status == 200:
+                                                ind_data = await ind_resp.json()
+                                                indicators = ind_data.get("results", indicators)
+                                    except (asyncio.TimeoutError, Exception):
+                                        pass
 
-                except asyncio.TimeoutError:
-                    logger.warning(f"OTX request timed out on page {page}")
-                    errors.append(f"timeout_page_{page}")
-                    break
+                                for indicator in indicators:
+                                    ioc_type = indicator.get("type", "")
+                                    ioc_value = indicator.get("indicator", "")
+                                    ioc_title = indicator.get("title", "")
+                                    ioc_created = indicator.get("created", "")
+
+                                    if not ioc_value:
+                                        continue
+
+                                    # Only keep geolocatable types
+                                    if ioc_type not in ("IPv4", "IPv6", "URL", "hostname", "domain"):
+                                        # Still keep hashes if we have targeted_countries
+                                        if not targeted_countries:
+                                            continue
+
+                                    all_indicators.append({
+                                        "type": ioc_type,
+                                        "value": ioc_value,
+                                        "title": ioc_title,
+                                        "created": ioc_created,
+                                        "pulse_id": pulse_id,
+                                        "pulse_name": pulse_name,
+                                        "pulse_tags": pulse_tags,
+                                        "attack_ids": attack_ids,
+                                        "adversary": adversary,
+                                        "targeted_countries": targeted_countries,
+                                        "malware_families": [m.get("display_name", str(m))
+                                                             if isinstance(m, dict) else str(m)
+                                                             for m in malware_families],
+                                    })
+
+                                pulses_processed += 1
+
+                            if data.get("next"):
+                                page += 1
+                            else:
+                                break
+
+                    except asyncio.TimeoutError:
+                        logger.warning(f"OTX {endpoint_name} timed out on page {page}")
+                        errors.append(f"timeout_{endpoint_name}_page_{page}")
+                        break
+
+                logger.info(f"OTX {endpoint_name}: {page - 1} pages fetched")
 
             logger.info(f"OTX: {pulses_processed} pulses, {len(all_indicators)} indicators fetched")
 
@@ -237,12 +267,13 @@ async def ingest(session: Session, hours_back: int = 24) -> int:
                             country = geo_result.country_iso or ""
                             city = getattr(geo_result, "city_name", "") or ""
                             asn = getattr(geo_result, "asn", "") or ""
+                            indicators_geolocated += 1
                         else:
                             continue  # Skip IPs we can't geolocate
 
-                    # For URLs/hostnames, resolve domain to IP
-                    elif ioc_type in ("URL", "hostname"):
-                        resolved_ip = _resolve_domain_to_ip(ioc_value, ioc_type)
+                    # For URLs/hostnames/domains, resolve to IP
+                    elif ioc_type in ("URL", "hostname", "domain"):
+                        resolved_ip = _resolve_domain_to_ip(ioc_value, ioc_type if ioc_type != "domain" else "hostname")
                         if resolved_ip:
                             geo_result = geolocate(resolved_ip)
                             if geo_result and geo_result.lat:
@@ -251,6 +282,7 @@ async def ingest(session: Session, hours_back: int = 24) -> int:
                                 country = geo_result.country_iso or ""
                                 city = getattr(geo_result, "city_name", "") or ""
                                 asn = getattr(geo_result, "asn", "") or ""
+                                indicators_geolocated += 1
                             else:
                                 continue
                         else:
@@ -320,8 +352,8 @@ async def ingest(session: Session, hours_back: int = 24) -> int:
         errors.append(str(e)[:200])
         return 0
 
-    logger.info(f"OTX ingest complete: {events_created} events from {pulses_processed} pulses "
-                f"({len(errors)} errors)")
+    logger.info(f"OTX ingest complete: {events_created} events from {pulses_processed} pulses, "
+                f"{indicators_geolocated} geolocated ({len(errors)} errors)")
     return events_created
 
 

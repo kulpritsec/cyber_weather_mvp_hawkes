@@ -171,9 +171,10 @@ async def ingest(session: Session, hours_back: int = 24) -> int:
             # --- Phase 1: Blacklist (bulk, 1 API call) ---
             blacklist_ips = await _fetch_blacklist(
                 http, headers,
-                confidence_minimum=75,
+                confidence_minimum=90,
                 limit=500,  # Plenty for geographic spread
             )
+            logger.info(f"AbuseIPDB: fetched {len(blacklist_ips)} blacklist IPs")
 
             for entry in blacklist_ips:
                 try:
@@ -186,8 +187,9 @@ async def ingest(session: Session, hours_back: int = 24) -> int:
                     if not ip:
                         continue
 
-                    # Deduplicate
-                    raw_ref = f"abuseipdb_bl_{ip}"
+                    # Deduplicate per day (allow fresh data each day)
+                    today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+                    raw_ref = f"abuseipdb_bl_{ip}_{today_str}"
                     existing = session.query(Event).filter_by(raw_ref=raw_ref).first()
                     if existing:
                         continue
@@ -286,7 +288,8 @@ async def ingest(session: Session, hours_back: int = 24) -> int:
                     domain = report_data.get("domain", "")
 
                     # Update the existing event with enriched data
-                    raw_ref = f"abuseipdb_bl_{ip}"
+                    today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+                    raw_ref = f"abuseipdb_bl_{ip}_{today_str}"
                     existing_event = session.query(Event).filter_by(raw_ref=raw_ref).first()
                     if existing_event:
                         existing_event.vector = vector

@@ -5,7 +5,6 @@ import { ArcDetailPanel, HotspotCellPanel, PredictiveContextPanel, MathLabPanel,
 import { BlockchainForensics } from './Panels';
 import IOCEnrichmentPanel from "./Panels/IOCEnrichmentPanel";
 import type { ArcData, HotspotCellData } from './Panels';
-import IOCEnrichmentPanel from "./Panels/IOCEnrichmentPanel";
 import TTPHeatmapPanel from "./Panels/TTPHeatmapPanel";
 import { TemporalReplayControls } from './ReplayControls';
 import { addCountryBorders } from "./Globe/CountryBorders";
@@ -134,12 +133,12 @@ function latLonToVec3(lat: number, lon: number, radius: number): THREE.Vector3 {
   );
 }
 
-function createArcCurve(src: { lat: number; lon: number }, tgt: { lat: number; lon: number }, radius: number) {
+function createArcCurve(src: { lat: number; lon: number }, tgt: { lat: number; lon: number }, radius: number, heightFactor = 0.35) {
   const v1 = latLonToVec3(src.lat, src.lon, radius);
   const v2 = latLonToVec3(tgt.lat, tgt.lon, radius);
   const mid = v1.clone().add(v2).multiplyScalar(0.5);
   const dist = v1.distanceTo(v2);
-  mid.normalize().multiplyScalar(radius + dist * 0.35);
+  mid.normalize().multiplyScalar(radius + dist * heightFactor);
   return new THREE.QuadraticBezierCurve3(v1, mid, v2);
 }
 
@@ -993,8 +992,10 @@ export default function CyberWeatherGlobe() {
   const [selectedCountry, setSelectedCountry] = useState<any>(null);
   const [showFeedStatus, setShowFeedStatus] = useState(false);
   const [showExposure, setShowExposure] = useState(true);
+  const [showPressure, setShowPressure] = useState(false);
   const [exposureData, setExposureData] = useState<any[]>([]);
   const exposureGroupRef = useRef<THREE.Group | null>(null);
+  const pressureObjRef = useRef<THREE.Mesh | null>(null);
   const [showAlchemy, setShowAlchemy] = useState(false);
   const [showThreatIntel, setShowThreatIntel] = useState(false);
   const [showIOCEnrich, setShowIOCEnrich] = useState(false);
@@ -1097,6 +1098,92 @@ export default function CyberWeatherGlobe() {
     else scene.add(expGroup);
   }, [exposureData, showExposure]);
 
+  // ─── PRESSURE LAYER (Canvas2D texture on transparent sphere) ───
+  useEffect(() => {
+    const globe = globeRef.current;
+    if (!globe) return;
+
+    // Remove previous pressure mesh
+    if (pressureObjRef.current) {
+      globe.remove(pressureObjRef.current);
+      if ((pressureObjRef.current as any).material?.map) (pressureObjRef.current as any).material.map.dispose();
+      if ((pressureObjRef.current as any).material) (pressureObjRef.current as any).material.dispose();
+      if (pressureObjRef.current.geometry) pressureObjRef.current.geometry.dispose();
+      pressureObjRef.current = null;
+    }
+
+    if (!showPressure) return;
+
+    try {
+      const hotspots = data?.all_hotspots || data?.top_threats || [];
+      if (hotspots.length === 0) return;
+
+      const canvas = document.createElement("canvas");
+      canvas.width = 1024;
+      canvas.height = 512;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      // Clear transparent
+      ctx.clearRect(0, 0, 1024, 512);
+
+      // Paint radial gradients for top 20 hotspots
+      const sorted = [...hotspots].sort((a: any, b: any) => (b.intensity || 0) - (a.intensity || 0)).slice(0, 20);
+      for (const hs of sorted) {
+        const x = ((hs.lon + 180) / 360) * 1024;
+        const y = ((90 - hs.lat) / 180) * 512;
+        const intensity = Math.min(1, (hs.intensity || 0.5));
+        const radius = 30 + intensity * 60;
+
+        // Pressure gradient (blue→cyan→green→yellow→red)
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, radius);
+        grad.addColorStop(0, `rgba(239,68,68,${intensity * 0.4})`);
+        grad.addColorStop(0.25, `rgba(249,115,22,${intensity * 0.3})`);
+        grad.addColorStop(0.5, `rgba(234,179,8,${intensity * 0.2})`);
+        grad.addColorStop(0.75, `rgba(34,197,94,${intensity * 0.1})`);
+        grad.addColorStop(1, "rgba(0,200,255,0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 1024, 512);
+
+        // Concentric isobar rings
+        ctx.strokeStyle = `rgba(0,200,255,${intensity * 0.15})`;
+        ctx.lineWidth = 0.5;
+        for (let r = radius * 0.3; r <= radius; r += radius * 0.25) {
+          ctx.beginPath();
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+      const geo = new THREE.SphereGeometry(1.005, 64, 32);
+      const mat = new THREE.MeshBasicMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 0.6,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.FrontSide,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      globe.add(mesh);
+      pressureObjRef.current = mesh;
+    } catch (e) {
+      console.warn("Pressure layer error:", e);
+    }
+
+    return () => {
+      if (pressureObjRef.current && globe) {
+        globe.remove(pressureObjRef.current);
+        if ((pressureObjRef.current as any).material?.map) (pressureObjRef.current as any).material.map.dispose();
+        if ((pressureObjRef.current as any).material) (pressureObjRef.current as any).material.dispose();
+        if (pressureObjRef.current.geometry) pressureObjRef.current.geometry.dispose();
+        pressureObjRef.current = null;
+      }
+    };
+  }, [showPressure, data]);
+
   // Update clock + real EPS from event stream
   const epsCountRef = useRef(0);
   const epsWindowRef = useRef<number[]>([]);
@@ -1178,56 +1265,125 @@ export default function CyberWeatherGlobe() {
   // ─── LIVE ARC SPAWNER: SSE events → animated arcs on globe ───
   useEffect(() => {
     const R = 1;
-    const MAX_LIVE_ARCS = 200;
-    const ARC_LIFETIME = 4000;
-    const liveArcs: Array<{ mesh: THREE.Mesh; born: number }> = [];
+    const MAX_LIVE_ARCS = 250;
+    const ARC_LIFETIME = 4500;
+    type LiveArc = {
+      mesh: THREE.Mesh;
+      born: number;
+      particle?: THREE.Mesh;
+      flash?: THREE.Mesh;
+      curve?: THREE.CatmullRomCurve3;
+      targetPos?: THREE.Vector3;
+    };
+    const liveArcs: LiveArc[] = [];
+
+    // Reusable geometries for particles and flashes
+    const particleGeo = new THREE.SphereGeometry(0.005, 6, 6);
+    const flashGeo = new THREE.RingGeometry(0.002, 0.012, 8);
 
     const interval = setInterval(() => {
       const group = arcsGroupRef.current;
       if (!group) return;
 
       const now = Date.now();
-      // Fade & remove expired
+      // Fade, animate particles & remove expired
       for (let i = liveArcs.length - 1; i >= 0; i--) {
-        const age = now - liveArcs[i].born;
+        const arc = liveArcs[i];
+        const age = now - arc.born;
         if (age > ARC_LIFETIME) {
-          const m = liveArcs[i].mesh;
-          group.remove(m);
-          if (m.geometry) m.geometry.dispose();
-          if ((m as any).material) (m as any).material.dispose();
+          // Cleanup arc mesh
+          group.remove(arc.mesh);
+          if (arc.mesh.geometry) arc.mesh.geometry.dispose();
+          if ((arc.mesh as any).material) (arc.mesh as any).material.dispose();
+          // Cleanup particle
+          if (arc.particle) {
+            group.remove(arc.particle);
+            if ((arc.particle as any).material) (arc.particle as any).material.dispose();
+          }
+          // Cleanup flash
+          if (arc.flash) {
+            group.remove(arc.flash);
+            if ((arc.flash as any).material) (arc.flash as any).material.dispose();
+          }
           liveArcs.splice(i, 1);
         } else {
-          const mat = (liveArcs[i].mesh as any).material as THREE.MeshBasicMaterial;
-          if (age < 500) mat.opacity = (age / 500) * 0.6;
-          else if (age > ARC_LIFETIME - 1500) mat.opacity = ((ARC_LIFETIME - age) / 1500) * 0.6;
-          else mat.opacity = 0.6;
+          // Arc opacity fade in/out
+          const mat = (arc.mesh as any).material as THREE.MeshBasicMaterial;
+          if (age < 400) mat.opacity = (age / 400) * 0.7;
+          else if (age > ARC_LIFETIME - 1200) mat.opacity = ((ARC_LIFETIME - age) / 1200) * 0.7;
+          else mat.opacity = 0.7;
+
+          // Animate traveling particle along the curve
+          if (arc.particle && arc.curve) {
+            const progress = Math.min(age / (ARC_LIFETIME * 0.7), 1.0);
+            const pt = arc.curve.getPointAt(progress);
+            arc.particle.position.copy(pt);
+            const pMat = (arc.particle as any).material as THREE.MeshBasicMaterial;
+            if (progress >= 1.0) {
+              pMat.opacity = 0;
+              // Trigger impact flash at target
+              if (arc.flash && arc.targetPos) {
+                const flashAge = age - ARC_LIFETIME * 0.7;
+                const flashDur = ARC_LIFETIME * 0.3;
+                if (flashAge > 0 && flashAge < flashDur) {
+                  const fMat = (arc.flash as any).material as THREE.MeshBasicMaterial;
+                  const fp = 1 - flashAge / flashDur;
+                  fMat.opacity = fp * 0.8;
+                  arc.flash.scale.setScalar(1 + (1 - fp) * 3);
+                }
+              }
+            } else {
+              pMat.opacity = 0.95;
+            }
+          }
         }
       }
 
-      // Spawn from SSE buffer (up to 3 per tick for dense visual)
-      const batch = sseEventsRef.current.length > 0 ? sseEventsRef.current.splice(0, 3) : [];
+      // Spawn from SSE buffer (up to 4 per tick for dense visual)
+      const batch = sseEventsRef.current.length > 0 ? sseEventsRef.current.splice(0, 4) : [];
       for (const ev of batch) {
         if (liveArcs.length >= MAX_LIVE_ARCS) break;
         if (Math.abs(ev.srcLat - ev.lat) < 1 && Math.abs(ev.srcLon - ev.lon) < 1) continue;
         try {
-          const curve = createArcCurve({ lat: ev.srcLat, lon: ev.srcLon }, { lat: ev.lat, lon: ev.lon }, R);
-          const tubeGeo = new THREE.TubeGeometry(curve, 24, 0.002, 4, false);
+          // Slight arc height variation for visual separation
+          const heightVar = 0.15 + Math.random() * 0.2;
+          const curve = createArcCurve({ lat: ev.srcLat, lon: ev.srcLon }, { lat: ev.lat, lon: ev.lon }, R, heightVar);
+          const tubeGeo = new THREE.TubeGeometry(curve, 28, 0.003, 5, false);
           const col = new THREE.Color(VECTOR_COLORS[ev.vector] || COLORS.textAccent);
           const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.01 });
           const tube = new THREE.Mesh(tubeGeo, mat);
           tube.userData = { liveArc: true };
           group.add(tube);
-          liveArcs.push({ mesh: tube, born: Date.now() });
+
+          // Traveling particle (bright pulse along arc)
+          const pMat = new THREE.MeshBasicMaterial({ color: col.clone().multiplyScalar(1.5), transparent: true, opacity: 0 });
+          const particle = new THREE.Mesh(particleGeo, pMat);
+          particle.position.copy(curve.getPointAt(0));
+          group.add(particle);
+
+          // Impact flash at target
+          const targetPos = curve.getPointAt(1);
+          const fMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0, side: THREE.DoubleSide });
+          const flash = new THREE.Mesh(flashGeo, fMat);
+          flash.position.copy(targetPos);
+          flash.lookAt(new THREE.Vector3(0, 0, 0));
+          group.add(flash);
+
+          liveArcs.push({ mesh: tube, born: Date.now(), particle, flash, curve, targetPos });
         } catch {}
       }
-    }, 40);
+    }, 35);
 
     return () => {
       clearInterval(interval);
       liveArcs.forEach(a => {
         if (a.mesh.geometry) a.mesh.geometry.dispose();
         if ((a.mesh as any).material) (a.mesh as any).material.dispose();
+        if (a.particle && (a.particle as any).material) (a.particle as any).material.dispose();
+        if (a.flash && (a.flash as any).material) (a.flash as any).material.dispose();
       });
+      particleGeo.dispose();
+      flashGeo.dispose();
     };
   }, []);
 
@@ -1309,6 +1465,7 @@ export default function CyberWeatherGlobe() {
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { setSelectedArc(null); setSelectedCell(null); setShowContextEngine(false); setShowMathLab(false); setShowInfrastructure(false); setShowThreatIntel(false); setShowFlowMath(false); setShowReplay(false); setShowIOCEnrich(false); setIOCIndicator(""); }
       if (e.key === 'l' || e.key === 'L') setIsLiveMode((v) => !v);
+      if (e.key === 'p' || e.key === 'P') setShowPressure((v) => !v);
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
@@ -1610,6 +1767,24 @@ export default function CyberWeatherGlobe() {
             </div>
             <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "13px", fontWeight: 800, color: showTTPHeatmap ? "#a855f7" : "rgba(168,85,247,0.6)", letterSpacing: "0.08em" }}>
               📡 TTP
+            </div>
+          </button>
+          {/* ─── PRESSURE LAYER BUTTON ─── */}
+          <button
+            onClick={() => setShowPressure((v) => !v)}
+            style={{
+              display: "flex", flexDirection: "column", alignItems: "center",
+              padding: "6px 8px", borderRadius: "4px", minWidth: "82px", textAlign: "center" as const,
+              background: showPressure ? "rgba(249,115,22,0.15)" : "rgba(249,115,22,0.05)",
+              border: `1px solid ${showPressure ? "rgba(249,115,22,0.5)" : "rgba(249,115,22,0.2)"}`,
+              cursor: "pointer", transition: "all 0.15s",
+            }}
+          >
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "9px", color: "rgba(249,115,22,0.6)", letterSpacing: "0.15em", marginBottom: "2px" }}>
+              PRESSURE [P]
+            </div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "13px", fontWeight: 800, color: showPressure ? "#f97316" : "rgba(249,115,22,0.6)", letterSpacing: "0.08em" }}>
+              🌡 MAP
             </div>
           </button>
 

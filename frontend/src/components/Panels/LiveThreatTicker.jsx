@@ -56,8 +56,6 @@ const SOURCE_LABELS = {
   cisa_kev: "CISA KEV",
   otx: "OTX",
   abuseipdb: "AbuseIPDB",
-  otx: "OTX",
-  abuseipdb: "AbuseIPDB",
 };
 
 function sourceLabel(src) {
@@ -108,7 +106,7 @@ function EventTickerScroll({ events }) {
   if (!displayEvents || displayEvents.length === 0) return null;
 
   const doubled = displayEvents.concat(displayEvents);
-  const duration = Math.max(30, displayEvents.length * 4);
+  const duration = Math.max(36, displayEvents.length * 4.8);
 
   return (
     <div style={{ overflow: "hidden", whiteSpace: "nowrap", height: "22px", lineHeight: "22px", fontFamily: MONO, fontSize: "10px" }}>
