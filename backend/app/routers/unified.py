@@ -954,15 +954,22 @@ def get_context_events(
 
 
 @router.get("/context/seasonal")
-def get_context_seasonal():
+def get_context_seasonal(vector: Optional[str] = Query(default=None)):
     """Seasonal multipliers S(t) per vector. Derived from STL decomposition of 3yr historical data."""
     now = datetime.now(timezone.utc)
     month_idx = now.month - 1
     dow_idx = now.weekday()
+    if vector and vector in SEASONAL_MULTIPLIERS:
+        mults = SEASONAL_MULTIPLIERS[vector]
+        return {
+            "multipliers": {vector: mults},
+            "current_s_t": round(mults[month_idx] * _DOW[dow_idx], 3),
+            "current_month_idx": month_idx,
+        }
     result = {}
-    for vector, mults in _SEASONAL.items():
+    for v, mults in SEASONAL_MULTIPLIERS.items():
         current_mult = mults[month_idx] * _DOW[dow_idx]
-        result[vector] = {
+        result[v] = {
             "monthly": mults,
             "dow": _DOW,
             "current_s_t": round(current_mult, 3),
@@ -970,33 +977,28 @@ def get_context_seasonal():
             "current_dow_idx": dow_idx,
         }
     return {
+        "multipliers": SEASONAL_MULTIPLIERS,
         "data_source": "stl_decomposition",
-        "data_sources": ["Historical CTI feeds (DShield, GreyNoise, Abuse.ch)", "STL (statsmodels)", "Mandiant M-Trends 2024"],
-        "description": "STL seasonal decomposition — multiplicative factor S(t) = monthly × day-of-week effect.",
         "vectors": result,
     }
 
 
 @router.get("/context/campaigns")
-def get_context_campaigns():
+def get_context_campaigns(
+    vector: Optional[str] = Query(default=None),
+    active_only: bool = Query(default=False),
+):
     """Campaign recurrence profiles C(t) per APT group. Source: MITRE ATT&CK, CISA."""
-    now = datetime.now(timezone.utc)
-    month_idx = now.month - 1
-    result = []
-    for group in _CAMPAIGN_PROFILES:
-        current_intensity = group["monthly_intensity"][month_idx]
-        result.append({
-            **group,
-            "current_month_intensity": round(current_intensity, 3),
-            "is_elevated": current_intensity >= 1.0,
-        })
-    # Sort by current month activity
-    result.sort(key=lambda g: g["current_month_intensity"], reverse=True)
+    current_month = datetime.now(timezone.utc).month
+    campaigns = list(CAMPAIGN_RECURRENCE)
+    if vector:
+        campaigns = [c for c in campaigns if vector in c["vectors"]]
+    if active_only:
+        campaigns = [c for c in campaigns if current_month in c["months"]]
     return {
-        "data_source": "mitre_attack_v14",
-        "data_sources": ["MITRE ATT&CK v14.1", "CISA Advisories (AA-series)", "Mandiant/CrowdStrike Annual Reports"],
-        "current_month": now.strftime("%B"),
-        "groups": result,
+        "campaigns": campaigns,
+        "total": len(campaigns),
+        "current_month": current_month,
     }
 
 
@@ -1554,35 +1556,6 @@ def get_forecast_series(
             "steady_state": round(steady_state, 2),
         },
     }
-
-
-# ─── Campaign Recurrence API ─────────────────────────────────────────────
-@router.get("/context/campaigns")
-def get_campaign_recurrence(
-    vector: Optional[str] = Query(default=None),
-    active_only: bool = Query(default=False),
-):
-    """Serve campaign recurrence data. Replaces hardcoded frontend data."""
-    current_month = datetime.now(timezone.utc).month
-    campaigns = CAMPAIGN_RECURRENCE
-    if vector:
-        campaigns = [c for c in campaigns if vector in c["vectors"]]
-    if active_only:
-        campaigns = [c for c in campaigns if current_month in c["months"]]
-    return {
-        "campaigns": campaigns,
-        "total": len(campaigns),
-        "current_month": current_month,
-    }
-
-
-# ─── Seasonal Multipliers API ────────────────────────────────────────────
-@router.get("/context/seasonal")
-def get_seasonal_multipliers(vector: Optional[str] = Query(default=None)):
-    """Serve seasonal multiplier data."""
-    if vector and vector in SEASONAL_MULTIPLIERS:
-        return {"multipliers": {vector: SEASONAL_MULTIPLIERS[vector]}}
-    return {"multipliers": SEASONAL_MULTIPLIERS}
 
 
 # ─── Backtesting API ─────────────────────────────────────────────────────
