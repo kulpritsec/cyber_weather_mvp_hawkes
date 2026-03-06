@@ -279,7 +279,7 @@ async def _fetch_gdelt_events() -> List[Dict[str, Any]]:
 
                 for article in articles[:5]:  # Top 5 per query
                     title = article.get("title", "")
-                    desc = article.get("seendate", "")
+                    desc = article.get("title", "")  # GDELT DOC 2.0 has no description; use title for classification
                     url = article.get("url", "")
                     domain = article.get("domain", "")
 
