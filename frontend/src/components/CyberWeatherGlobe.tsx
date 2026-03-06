@@ -66,35 +66,10 @@ const SEVERITY_CONFIG: Record<number, { label: string; color: string; icon: stri
   5: { label: "EMERGENCY", color: COLORS.emergency, icon: "⬢", desc: "Category 5 cyber hurricane — cascade imminent" },
 };
 
-// ─── GEOGRAPHIC DATA ────────────────────────────────────────────────────
-// Simplified coastline points (major landmass outlines)
-const COASTLINE_POINTS: [number, number][] = [];
-function addCoastRegion(latMin: number, latMax: number, lonMin: number, lonMax: number, density = 0.08) {
-  for (let i = 0; i < density * 1000; i++) {
-    const lat = latMin + Math.random() * (latMax - latMin);
-    const lon = lonMin + Math.random() * (lonMax - lonMin);
-    COASTLINE_POINTS.push([lat, lon]);
-  }
-}
-// North America
-addCoastRegion(25, 50, -130, -60, 0.15);
-addCoastRegion(50, 70, -170, -55, 0.08);
-// South America
-addCoastRegion(-55, 12, -82, -35, 0.12);
-// Europe
-addCoastRegion(35, 70, -10, 40, 0.15);
-// Africa
-addCoastRegion(-35, 37, -20, 52, 0.12);
-// Asia
-addCoastRegion(10, 55, 40, 145, 0.2);
-addCoastRegion(55, 75, 30, 180, 0.08);
-// Australia
-addCoastRegion(-45, -10, 110, 155, 0.08);
-
 // ─── MAJOR CITY REFERENCE DATA ──────────────────────────────────────────
-// Used to resolve grid cell coordinates to human-readable city names
+// Expanded city list for accurate location resolution (~120 cities)
 const MAJOR_CITY_HOTSPOTS: { name: string; lat: number; lon: number }[] = [
-  // North America
+  // North America — US
   { name: "New York, US", lat: 40.71, lon: -74.01 },
   { name: "Washington DC, US", lat: 38.91, lon: -77.04 },
   { name: "Los Angeles, US", lat: 34.05, lon: -118.24 },
@@ -102,36 +77,136 @@ const MAJOR_CITY_HOTSPOTS: { name: string; lat: number; lon: number }[] = [
   { name: "San Francisco, US", lat: 37.77, lon: -122.42 },
   { name: "Dallas, US", lat: 32.78, lon: -96.80 },
   { name: "Miami, US", lat: 25.76, lon: -80.19 },
+  { name: "Houston, US", lat: 29.76, lon: -95.37 },
+  { name: "Atlanta, US", lat: 33.75, lon: -84.39 },
+  { name: "Seattle, US", lat: 47.61, lon: -122.33 },
+  { name: "Boston, US", lat: 42.36, lon: -71.06 },
+  { name: "Denver, US", lat: 39.74, lon: -104.99 },
+  { name: "Phoenix, US", lat: 33.45, lon: -112.07 },
+  { name: "Las Vegas, US", lat: 36.17, lon: -115.14 },
+  { name: "Minneapolis, US", lat: 44.98, lon: -93.27 },
+  { name: "Detroit, US", lat: 42.33, lon: -83.05 },
+  { name: "Philadelphia, US", lat: 39.95, lon: -75.17 },
+  { name: "San Jose, US", lat: 37.34, lon: -121.89 },
+  { name: "Austin, US", lat: 30.27, lon: -97.74 },
+  { name: "Charlotte, US", lat: 35.23, lon: -80.84 },
+  // North America — Canada / Mexico
   { name: "Toronto, CA", lat: 43.65, lon: -79.38 },
-  // Europe
+  { name: "Vancouver, CA", lat: 49.28, lon: -123.12 },
+  { name: "Montreal, CA", lat: 45.50, lon: -73.57 },
+  { name: "Calgary, CA", lat: 51.05, lon: -114.07 },
+  { name: "Mexico City, MX", lat: 19.43, lon: -99.13 },
+  { name: "Monterrey, MX", lat: 25.67, lon: -100.31 },
+  // Europe — Western
   { name: "London, GB", lat: 51.51, lon: -0.13 },
   { name: "Amsterdam, NL", lat: 52.37, lon: 4.90 },
   { name: "Frankfurt, DE", lat: 50.11, lon: 8.68 },
+  { name: "Berlin, DE", lat: 52.52, lon: 13.41 },
+  { name: "Munich, DE", lat: 48.14, lon: 11.58 },
   { name: "Paris, FR", lat: 48.86, lon: 2.35 },
+  { name: "Madrid, ES", lat: 40.42, lon: -3.70 },
+  { name: "Barcelona, ES", lat: 41.39, lon: 2.17 },
+  { name: "Milan, IT", lat: 45.46, lon: 9.19 },
+  { name: "Rome, IT", lat: 41.90, lon: 12.50 },
+  { name: "Zurich, CH", lat: 47.37, lon: 8.54 },
+  { name: "Vienna, AT", lat: 48.21, lon: 16.37 },
+  { name: "Brussels, BE", lat: 50.85, lon: 4.35 },
+  { name: "Lisbon, PT", lat: 38.72, lon: -9.14 },
+  { name: "Dublin, IE", lat: 53.35, lon: -6.26 },
+  // Europe — Nordic / Baltic
+  { name: "Stockholm, SE", lat: 59.33, lon: 18.07 },
+  { name: "Helsinki, FI", lat: 60.17, lon: 24.94 },
+  { name: "Oslo, NO", lat: 59.91, lon: 10.75 },
+  { name: "Copenhagen, DK", lat: 55.68, lon: 12.57 },
+  { name: "Tallinn, EE", lat: 59.44, lon: 24.75 },
+  { name: "Riga, LV", lat: 56.95, lon: 24.11 },
+  { name: "Vilnius, LT", lat: 54.69, lon: 25.28 },
+  // Europe — Eastern
   { name: "Moscow, RU", lat: 55.76, lon: 37.62 },
   { name: "St Petersburg, RU", lat: 59.93, lon: 30.32 },
   { name: "Kyiv, UA", lat: 50.45, lon: 30.52 },
+  { name: "Warsaw, PL", lat: 52.23, lon: 21.01 },
   { name: "Bucharest, RO", lat: 44.43, lon: 26.10 },
-  // Asia
+  { name: "Prague, CZ", lat: 50.08, lon: 14.44 },
+  { name: "Budapest, HU", lat: 47.50, lon: 19.04 },
+  { name: "Belgrade, RS", lat: 44.79, lon: 20.45 },
+  { name: "Sofia, BG", lat: 42.70, lon: 23.32 },
+  { name: "Athens, GR", lat: 37.98, lon: 23.73 },
+  { name: "Minsk, BY", lat: 53.90, lon: 27.57 },
+  // Asia — East
   { name: "Beijing, CN", lat: 39.90, lon: 116.40 },
   { name: "Shanghai, CN", lat: 31.23, lon: 121.47 },
   { name: "Shenzhen, CN", lat: 22.54, lon: 114.06 },
+  { name: "Guangzhou, CN", lat: 23.13, lon: 113.26 },
+  { name: "Chengdu, CN", lat: 30.57, lon: 104.07 },
+  { name: "Hangzhou, CN", lat: 30.27, lon: 120.15 },
   { name: "Tokyo, JP", lat: 35.68, lon: 139.69 },
+  { name: "Osaka, JP", lat: 34.69, lon: 135.50 },
   { name: "Seoul, KR", lat: 37.57, lon: 126.98 },
-  { name: "Mumbai, IN", lat: 19.08, lon: 72.88 },
-  { name: "Singapore, SG", lat: 1.35, lon: 103.82 },
   { name: "Taipei, TW", lat: 25.03, lon: 121.57 },
+  { name: "Hong Kong, HK", lat: 22.32, lon: 114.17 },
+  // Asia — South & Southeast
+  { name: "Mumbai, IN", lat: 19.08, lon: 72.88 },
+  { name: "Delhi, IN", lat: 28.61, lon: 77.21 },
+  { name: "Bangalore, IN", lat: 12.97, lon: 77.59 },
+  { name: "Hyderabad, IN", lat: 17.39, lon: 78.49 },
+  { name: "Singapore, SG", lat: 1.35, lon: 103.82 },
   { name: "Ho Chi Minh, VN", lat: 10.82, lon: 106.63 },
+  { name: "Hanoi, VN", lat: 21.03, lon: 105.85 },
+  { name: "Bangkok, TH", lat: 13.76, lon: 100.50 },
+  { name: "Jakarta, ID", lat: -6.21, lon: 106.85 },
+  { name: "Kuala Lumpur, MY", lat: 3.14, lon: 101.69 },
+  { name: "Manila, PH", lat: 14.60, lon: 120.98 },
+  { name: "Dhaka, BD", lat: 23.81, lon: 90.41 },
+  { name: "Colombo, LK", lat: 6.93, lon: 79.85 },
+  // Asia — Central / West
   { name: "Tehran, IR", lat: 35.69, lon: 51.39 },
+  { name: "Istanbul, TR", lat: 41.01, lon: 28.98 },
+  { name: "Ankara, TR", lat: 39.93, lon: 32.87 },
+  { name: "Tbilisi, GE", lat: 41.72, lon: 44.79 },
+  { name: "Almaty, KZ", lat: 43.24, lon: 76.95 },
+  { name: "Tashkent, UZ", lat: 41.30, lon: 69.28 },
+  // Middle East
+  { name: "Dubai, AE", lat: 25.20, lon: 55.27 },
+  { name: "Abu Dhabi, AE", lat: 24.47, lon: 54.37 },
+  { name: "Riyadh, SA", lat: 24.71, lon: 46.68 },
+  { name: "Doha, QA", lat: 25.29, lon: 51.53 },
+  { name: "Tel Aviv, IL", lat: 32.09, lon: 34.77 },
+  { name: "Beirut, LB", lat: 33.89, lon: 35.50 },
+  { name: "Baghdad, IQ", lat: 33.31, lon: 44.37 },
   // South America
   { name: "São Paulo, BR", lat: -23.55, lon: -46.63 },
+  { name: "Rio de Janeiro, BR", lat: -22.91, lon: -43.17 },
   { name: "Buenos Aires, AR", lat: -34.60, lon: -58.38 },
-  // Africa / Middle East
+  { name: "Santiago, CL", lat: -33.45, lon: -70.65 },
+  { name: "Lima, PE", lat: -12.05, lon: -77.04 },
+  { name: "Bogotá, CO", lat: 4.71, lon: -74.07 },
+  { name: "Medellín, CO", lat: 6.25, lon: -75.56 },
+  { name: "Caracas, VE", lat: 10.50, lon: -66.92 },
+  { name: "Quito, EC", lat: -0.18, lon: -78.47 },
+  // Africa
   { name: "Lagos, NG", lat: 6.52, lon: 3.38 },
   { name: "Johannesburg, ZA", lat: -26.20, lon: 28.05 },
+  { name: "Cape Town, ZA", lat: -33.93, lon: 18.42 },
   { name: "Cairo, EG", lat: 30.04, lon: 31.24 },
+  { name: "Nairobi, KE", lat: -1.29, lon: 36.82 },
+  { name: "Accra, GH", lat: 5.56, lon: -0.19 },
+  { name: "Addis Ababa, ET", lat: 9.02, lon: 38.75 },
+  { name: "Dar es Salaam, TZ", lat: -6.79, lon: 39.28 },
+  { name: "Casablanca, MA", lat: 33.57, lon: -7.59 },
+  { name: "Tunis, TN", lat: 36.81, lon: 10.18 },
+  { name: "Algiers, DZ", lat: 36.75, lon: 3.04 },
+  { name: "Kampala, UG", lat: 0.35, lon: 32.58 },
   // Oceania
   { name: "Sydney, AU", lat: -33.87, lon: 151.21 },
+  { name: "Melbourne, AU", lat: -37.81, lon: 144.96 },
+  { name: "Perth, AU", lat: -31.95, lon: 115.86 },
+  { name: "Auckland, NZ", lat: -36.85, lon: 174.76 },
+  // Caribbean / Central America
+  { name: "San Juan, PR", lat: 18.47, lon: -66.11 },
+  { name: "Havana, CU", lat: 23.11, lon: -82.37 },
+  { name: "Panama City, PA", lat: 8.98, lon: -79.52 },
+  { name: "San José, CR", lat: 9.93, lon: -84.08 },
 ];
 
 /** Resolve a lat/lon to the nearest major city name (within ~2° tolerance) */
@@ -395,9 +470,10 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
     rimLight.position.set(-5, -2, -5);
     scene.add(rimLight);
 
-    // Globe
+    // Globe — base sphere with optional night earth texture
     const R = 1;
-    const globeGeo = new THREE.SphereGeometry(R, 64, 64);
+    const globeGeo = new THREE.SphereGeometry(R, 96, 96);
+    const textureLoader = new THREE.TextureLoader();
     const globeMat = new THREE.MeshPhongMaterial({
       color: 0x0a1628,
       emissive: 0x040c1a,
@@ -406,6 +482,22 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
       transparent: true,
       opacity: 0.95,
     });
+    // Load NASA night earth texture for geographic context
+    textureLoader.load('/earth-night.jpg',
+      (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        globeMat.map = tex;
+        // Darken the texture to blend with cyber theme — multiply with dark base
+        globeMat.color.setHex(0x1a2a3a);
+        globeMat.emissive.setHex(0x050a12);
+        globeMat.emissiveIntensity = 0.15;
+        globeMat.opacity = 0.98;
+        globeMat.needsUpdate = true;
+        console.log('[Globe] Night earth texture loaded');
+      },
+      undefined,
+      () => console.warn('[Globe] Night texture unavailable, using flat color')
+    );
     const globe = new THREE.Mesh(globeGeo, globeMat);
     scene.add(globe);
     globeRef.current = globe;
@@ -431,7 +523,7 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
     scene.add(new THREE.Mesh(haloGeo, haloMat));
 
     // Grid lines (lat/lon)
-    const gridMat = new THREE.LineBasicMaterial({ color: 0x0c2240, transparent: true, opacity: 0.25 });
+    const gridMat = new THREE.LineBasicMaterial({ color: 0x0c2240, transparent: true, opacity: 0.2 });
     for (let lat = -80; lat <= 80; lat += 20) {
       const pts = [];
       for (let lon = 0; lon <= 360; lon += 2) {
@@ -449,19 +541,15 @@ function useGlobe(canvasRef: React.RefObject<HTMLCanvasElement>, containerRef: R
       scene.add(new THREE.Line(geo, gridMat));
     }
 
-    // Land mass point cloud
-    const landPositions: number[] = [];
-    COASTLINE_POINTS.forEach(([lat, lon]) => {
-      const v = latLonToVec3(lat, lon, R * 1.002);
-      landPositions.push(v.x, v.y, v.z);
+    // Country topology — filled land polygons + borders (50m Natural Earth)
+    addCountryBorders(scene, R, {
+      showFill: true,
+      showBorders: true,
+      fillColor: 0x0f2a4a,
+      fillOpacity: 0.5,
+      borderColor: 0x1a6090,
+      borderOpacity: 0.4,
     });
-    const landGeo = new THREE.BufferGeometry();
-    landGeo.setAttribute("position", new THREE.Float32BufferAttribute(landPositions, 3));
-    const landMat = new THREE.PointsMaterial({ color: 0x1a4a7a, size: 0.006, transparent: true, opacity: 0.5 });
-    scene.add(new THREE.Points(landGeo, landMat));
-
-    // Country borders — using built-in coastline point cloud (sufficient detail)
-    addCountryBorders(scene, R);
 
     // Hotspot markers — handled by reactive useEffect below
 
@@ -927,17 +1015,17 @@ interface CountryData {
 
 function TopCountries({ onCountryClick }: { onCountryClick?: (c: CountryData) => void }) {
   const [countries, setCountries] = useState<CountryData[]>([]);
-  const [countryError, setCountryError] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   useEffect(() => {
     const load = async () => {
       try {
         const res = await fetch("/v1/top-countries");
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) { setFetchError(`HTTP ${res.status}`); return; }
         const d = await res.json();
         setCountries(d.countries || []);
-        setCountryError(null);
+        setFetchError(null);
       } catch (e: any) {
-        setCountryError(e.message || "Failed to fetch");
+        setFetchError(e.message || "Network error");
       }
     };
     load();
@@ -945,17 +1033,14 @@ function TopCountries({ onCountryClick }: { onCountryClick?: (c: CountryData) =>
     return () => clearInterval(id);
   }, []);
 
-  if (countryError && countries.length === 0) {
-    return (
-      <div style={{ fontSize: "9px", color: COLORS.textSecondary, fontFamily: "'JetBrains Mono', monospace", padding: "6px 0" }}>
-        ⚠ {countryError}
-      </div>
-    );
-  }
-
   const max = Math.max(...countries.map(c => c.total), 1);
   return (
     <div>
+      {fetchError && countries.length === 0 && (
+        <div style={{ fontSize: "9px", fontFamily: "'JetBrains Mono', monospace", color: "#ff6b6b", padding: "6px 0" }}>
+          Feed unavailable: {fetchError}
+        </div>
+      )}
       {countries.slice(0, 8).map((c, i) => {
         const topVector = Object.entries(c.vectors).sort((a, b) => b[1] - a[1])[0];
         const col = topVector ? (VECTOR_COLORS[topVector[0]] || COLORS.textAccent) : COLORS.textAccent;
@@ -1624,18 +1709,24 @@ export default function CyberWeatherGlobe() {
 
   if (!data) return (
     <div style={{
-      position: "fixed", inset: 0, background: COLORS.bg,
+      position: "fixed", inset: 0,
+      background: "radial-gradient(ellipse at center, #0a1628 0%, #020810 100%)",
       display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-      fontFamily: "'JetBrains Mono', monospace", color: COLORS.textAccent,
-      zIndex: 9999,
+      fontFamily: "'JetBrains Mono', monospace", color: COLORS.textSecondary,
     }}>
-      <div style={{ fontSize: "14px", letterSpacing: "0.2em", marginBottom: "16px", animation: "pulse 1.5s ease-in-out infinite" }}>
+      <div style={{ fontSize: "11px", letterSpacing: "0.2em", textTransform: "uppercase", marginBottom: "16px" }}>
         INITIALIZING THREAT GRID
       </div>
-      <div style={{ fontSize: "9px", color: COLORS.textSecondary, letterSpacing: "0.1em" }}>
-        Fetching nowcast & Hawkes parameters across all vectors...
+      <div style={{
+        width: "120px", height: "2px", background: "rgba(255,255,255,0.05)", borderRadius: "1px", overflow: "hidden",
+      }}>
+        <div style={{
+          width: "40%", height: "100%", background: COLORS.textAccent,
+          animation: "loading-slide 1.2s ease-in-out infinite",
+          borderRadius: "1px",
+        }} />
       </div>
-      <style>{`@keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }`}</style>
+      <style>{`@keyframes loading-slide { 0% { transform: translateX(-120px); } 100% { transform: translateX(180px); } }`}</style>
     </div>
   );
 
@@ -2073,26 +2164,26 @@ export default function CyberWeatherGlobe() {
         {/* ─── PIPELINE HEALTH ─── */}
         <div style={panelStyle}>
           <CollapsePanel title={`Pipeline ${eps > 0 ? "● LIVE" : "○ STALE"}`} defaultOpen={false}>
-          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "9px", color: COLORS.textSecondary }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "9px", color: COLORS.textSecondary, display: "flex", flexDirection: "column", gap: "4px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
               <span>Events / 24h</span>
-              <span style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{data.total_events_24h.toLocaleString()}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-              <span>Real-time EPS</span>
-              <span style={{ color: eps > 0 ? COLORS.clear : COLORS.warning, fontWeight: 600 }}>{eps}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-              <span>Active vectors</span>
-              <span style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{data.vectors.length}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-              <span>Hotspots tracked</span>
-              <span style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{data.all_hotspots?.length || data.top_threats.length}</span>
+              <span style={{ color: COLORS.textPrimary }}>{data.total_events_24h.toLocaleString()}</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span>SSE stream</span>
-              <span style={{ color: eps > 0 ? COLORS.clear : COLORS.emergency, fontWeight: 600 }}>{eps > 0 ? "CONNECTED" : "DISCONNECTED"}</span>
+              <span>Realtime EPS</span>
+              <span style={{ color: eps > 0 ? "#22c55e" : "#ff6b6b" }}>{eps}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Active Vectors</span>
+              <span style={{ color: COLORS.textPrimary }}>{data.vectors.length}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>Hotspots Tracked</span>
+              <span style={{ color: COLORS.textPrimary }}>{data.all_hotspots.length}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span>SSE Stream</span>
+              <span style={{ color: eps > 0 ? "#22c55e" : "#ff6b6b" }}>{eps > 0 ? "CONNECTED" : "DISCONNECTED"}</span>
             </div>
           </div>
           </CollapsePanel>
@@ -2223,7 +2314,12 @@ export default function CyberWeatherGlobe() {
 
       {/* ─── MATH LAB ─── */}
       {showMathLab && (
-        <MathLabPanel onClose={() => setShowMathLab(false)} />
+        <MathLabPanel
+          onClose={() => setShowMathLab(false)}
+          initialVector={selectedCell?.vector || selectedArc?.vector}
+          cellId={selectedCell?.cellId}
+          cellVector={selectedCell?.vector}
+        />
       )}
 
       {/* ─── INFRASTRUCTURE TOPOLOGY ─── */}
