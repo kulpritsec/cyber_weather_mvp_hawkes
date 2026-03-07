@@ -7,14 +7,18 @@
  *
  * Enhanced with:
  *  - Mini 3D rotating globe (Three.js inset)
+ *  - Full 3D interactive globe mode with flat/globe toggle
  *  - Real TeleGeography submarine cable data
  *  - Cloud provider health (Cloudflare PoPs, GCP incidents)
  *  - IODA internet outage detection
  *  - Network flow anomaly correlation
+ *  - Real satellite tracking via CelesTrak TLE + satellite.js SGP4
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import * as THREE from 'three';
+import * as satellite from 'satellite.js';
+import { addCountryBorders } from '../Globe/CountryBorders';
 
 // ─── DESIGN TOKENS ────────────────────────────────────────────────────────────
 const C = {
@@ -47,6 +51,14 @@ const VECTOR_COLORS: Record<string, string> = {
   botnet_c2: '#ff1744',
   ransomware: '#d500f9',
   malware: '#ff5252',
+};
+
+// ─── SATELLITE CONSTELLATION COLORS ─────────────────────────────────────────
+const SAT_CONSTELLATION_COLORS: Record<string, string> = {
+  starlink: '#00e5ff',
+  oneweb: '#6366f1',
+  geo: '#eab308',
+  iridium: '#22c55e',
 };
 
 // ─── MERCATOR PROJECTION ──────────────────────────────────────────────────────
@@ -189,7 +201,7 @@ const PROVIDER_COLORS: Record<string, string> = {
   GCP:   '#ef4444',
 };
 
-// ─── SATELLITE CONSTELLATIONS ────────────────────────────────────────────────
+// ─── SATELLITE CONSTELLATIONS (flat map bands) ──────────────────────────────
 interface SatConstellation {
   name: string;
   operator: string;
@@ -275,21 +287,21 @@ interface TooltipState {
   text: string;
 }
 
-// ─── NEW: Live cable from TeleGeography ─────────────────────────────────────
+// ─── Live cable from TeleGeography ──────────────────────────────────────────
 interface LiveCable {
   id: string;
   name: string;
   color: string;
-  coordinates: number[][][]; // MultiLineString: array of linestrings, each an array of [lon, lat]
+  coordinates: number[][][];
   segmentCount: number;
 }
 
-// ─── NEW: Cloud health types ────────────────────────────────────────────────
+// ─── Cloud health types ─────────────────────────────────────────────────────
 interface CloudflareComponent {
   name: string;
   status: string;
   group_id: string | null;
-  code: string; // extracted airport code
+  code: string;
 }
 
 interface GCPIncident {
@@ -309,24 +321,38 @@ interface CloudHealthState {
   loaded: boolean;
 }
 
-// ─── NEW: IODA outage types ─────────────────────────────────────────────────
+// ─── IODA outage types ──────────────────────────────────────────────────────
 interface IODAOutage {
   country: string;
   countryCode: string;
   datasource: string;
-  signalDrop: number; // percentage drop from normal
+  signalDrop: number;
   severity: 'watch' | 'warning' | 'critical';
 }
 
-// ─── NEW: Anomaly correlation types ─────────────────────────────────────────
+// ─── Anomaly correlation types ──────────────────────────────────────────────
 interface AnomalyCorrelation {
   country: string;
   countryCode: string;
-  flowIncrease: number; // percentage
+  flowIncrease: number;
   outageDetected: boolean;
   outageSource: string;
   severity: 'watch' | 'warning' | 'critical';
   explanation: string;
+}
+
+// ─── Satellite record type ──────────────────────────────────────────────────
+interface SatRecord {
+  name: string;
+  satrec: any;
+  constellation: string;
+}
+
+interface SatCounts {
+  starlink: number;
+  oneweb: number;
+  geo: number;
+  iridium: number;
 }
 
 // ─── COUNTRY CENTROIDS ───────────────────────────────────────────────────
@@ -399,6 +425,33 @@ const ToggleBtn = ({
     </button>
   );
 };
+
+// ─── VIEW MODE TOGGLE (FLAT / GLOBE) ─────────────────────────────────────────
+const ViewModeToggle = ({
+  mode, onChange,
+}: { mode: 'flat' | 'globe'; onChange: (m: 'flat' | 'globe') => void }) => (
+  <div style={{
+    display: 'inline-flex', borderRadius: '6px', overflow: 'hidden',
+    border: '1px solid rgba(0,180,255,0.25)', background: 'rgba(5,10,20,0.7)',
+  }}>
+    {(['flat', 'globe'] as const).map(m => (
+      <button
+        key={m}
+        onClick={() => onChange(m)}
+        style={{
+          padding: '3px 14px', fontSize: '10px', fontFamily: C.mono,
+          fontWeight: 700, letterSpacing: '0.08em', cursor: 'pointer',
+          border: 'none', transition: 'all 0.2s ease',
+          background: mode === m ? 'rgba(0,204,255,0.18)' : 'transparent',
+          color: mode === m ? C.accent : C.muted,
+          borderRight: m === 'flat' ? '1px solid rgba(0,180,255,0.15)' : 'none',
+        }}
+      >
+        {m === 'flat' ? '\u25C9 FLAT' : '\u25C9 GLOBE'}
+      </button>
+    ))}
+  </div>
+);
 
 // ─── SPARKLINE ──────────────────────────────────────────────────────────────
 function Sparkline({ data, color, width = 80, height = 20 }: {
@@ -477,6 +530,117 @@ function geoToSvgPaths(
     }
   }
   return results;
+}
+
+// ─── SATELLITE TLE FETCHING & PARSING ───────────────────────────────────────
+
+const TLE_SOURCES: { group: string; constellation: string; url: string; maxSats: number }[] = [
+  { group: 'starlink', constellation: 'starlink', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle', maxSats: 800 },
+  { group: 'oneweb', constellation: 'oneweb', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=oneweb&FORMAT=tle', maxSats: 400 },
+  { group: 'geo', constellation: 'geo', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=geo&FORMAT=tle', maxSats: 450 },
+  { group: 'iridium', constellation: 'iridium', url: 'https://celestrak.org/NORAD/elements/gp.php?GROUP=iridium-NEXT&FORMAT=tle', maxSats: 66 },
+];
+
+// Hardcoded fallback TLE data (small sample) for when CelesTrak is unreachable
+const FALLBACK_TLES: { name: string; line1: string; line2: string; constellation: string }[] = [
+  { name: 'STARLINK-1007', constellation: 'starlink', line1: '1 44713U 19074A   24001.00000000  .00001264  00000-0  94000-4 0  9990', line2: '2 44713  53.0554  73.4562 0001369  80.0000 280.0000 15.06380000    10' },
+  { name: 'STARLINK-1008', constellation: 'starlink', line1: '1 44714U 19074B   24001.00000000  .00001100  00000-0  82000-4 0  9990', line2: '2 44714  53.0550 110.4562 0001200  85.0000 275.0000 15.06380000    10' },
+  { name: 'STARLINK-1009', constellation: 'starlink', line1: '1 44715U 19074C   24001.00000000  .00001050  00000-0  78000-4 0  9990', line2: '2 44715  53.0548 147.4562 0001150  90.0000 270.0000 15.06380000    10' },
+  { name: 'STARLINK-1010', constellation: 'starlink', line1: '1 44716U 19074D   24001.00000000  .00000980  00000-0  73000-4 0  9990', line2: '2 44716  53.0546 184.4562 0001100  95.0000 265.0000 15.06380000    10' },
+  { name: 'STARLINK-1011', constellation: 'starlink', line1: '1 44717U 19074E   24001.00000000  .00000920  00000-0  69000-4 0  9990', line2: '2 44717  53.0544 221.4562 0001050 100.0000 260.0000 15.06380000    10' },
+  { name: 'STARLINK-1012', constellation: 'starlink', line1: '1 44718U 19074F   24001.00000000  .00000870  00000-0  65000-4 0  9990', line2: '2 44718  53.0542 258.4562 0001000 105.0000 255.0000 15.06380000    10' },
+  { name: 'STARLINK-1013', constellation: 'starlink', line1: '1 44719U 19074G   24001.00000000  .00000830  00000-0  62000-4 0  9990', line2: '2 44719  53.0540 295.4562 0000950 110.0000 250.0000 15.06380000    10' },
+  { name: 'STARLINK-1014', constellation: 'starlink', line1: '1 44720U 19074H   24001.00000000  .00000790  00000-0  59000-4 0  9990', line2: '2 44720  53.0538 332.4562 0000900 115.0000 245.0000 15.06380000    10' },
+  { name: 'ONEWEB-0012', constellation: 'oneweb', line1: '1 45131U 20008A   24001.00000000  .00000100  00000-0  10000-3 0  9990', line2: '2 45131  87.8800  45.0000 0002500  90.0000 270.0000 13.15000000    10' },
+  { name: 'ONEWEB-0017', constellation: 'oneweb', line1: '1 45132U 20008B   24001.00000000  .00000100  00000-0  10000-3 0  9990', line2: '2 45132  87.8800  90.0000 0002500  95.0000 265.0000 13.15000000    10' },
+  { name: 'ONEWEB-0020', constellation: 'oneweb', line1: '1 45133U 20008C   24001.00000000  .00000100  00000-0  10000-3 0  9990', line2: '2 45133  87.8800 135.0000 0002500 100.0000 260.0000 13.15000000    10' },
+  { name: 'ONEWEB-0032', constellation: 'oneweb', line1: '1 45134U 20008D   24001.00000000  .00000100  00000-0  10000-3 0  9990', line2: '2 45134  87.8800 180.0000 0002500 105.0000 255.0000 13.15000000    10' },
+  { name: 'IRIDIUM 106', constellation: 'iridium', line1: '1 43075U 18002A   24001.00000000  .00000050  00000-0  15000-4 0  9990', line2: '2 43075  86.3940  60.0000 0002100  90.0000 270.0000 14.34200000    10' },
+  { name: 'IRIDIUM 103', constellation: 'iridium', line1: '1 43076U 18002B   24001.00000000  .00000050  00000-0  15000-4 0  9990', line2: '2 43076  86.3940 120.0000 0002100  95.0000 265.0000 14.34200000    10' },
+  { name: 'IRIDIUM 109', constellation: 'iridium', line1: '1 43077U 18002C   24001.00000000  .00000050  00000-0  15000-4 0  9990', line2: '2 43077  86.3940 180.0000 0002100 100.0000 260.0000 14.34200000    10' },
+  { name: 'IRIDIUM 102', constellation: 'iridium', line1: '1 43078U 18002D   24001.00000000  .00000050  00000-0  15000-4 0  9990', line2: '2 43078  86.3940 240.0000 0002100 105.0000 255.0000 14.34200000    10' },
+  { name: 'SES-1', constellation: 'geo', line1: '1 36516U 10012A   24001.00000000  .00000010  00000-0  00000+0 0  9990', line2: '2 36516   0.0300 270.0000 0003500 270.0000  90.0000  1.00270000    10' },
+  { name: 'GALAXY 17', constellation: 'geo', line1: '1 32708U 08016A   24001.00000000  .00000010  00000-0  00000+0 0  9990', line2: '2 32708   0.0200 310.0000 0002800 280.0000  80.0000  1.00270000    10' },
+  { name: 'INTELSAT 37E', constellation: 'geo', line1: '1 42950U 17054A   24001.00000000  .00000010  00000-0  00000+0 0  9990', line2: '2 42950   0.0100 350.0000 0002200 290.0000  70.0000  1.00270000    10' },
+  { name: 'ASTRA 2F', constellation: 'geo', line1: '1 38778U 12051A   24001.00000000  .00000010  00000-0  00000+0 0  9990', line2: '2 38778   0.0400  28.2000 0002000 300.0000  60.0000  1.00270000    10' },
+];
+
+function parseTLEText(text: string, constellation: string, maxSats: number): SatRecord[] {
+  const lines = text.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  const records: SatRecord[] = [];
+  let i = 0;
+  while (i < lines.length - 1 && records.length < maxSats) {
+    let name = '';
+    let line1 = '';
+    let line2 = '';
+    if (lines[i].startsWith('1 ') && lines[i + 1]?.startsWith('2 ')) {
+      line1 = lines[i];
+      line2 = lines[i + 1];
+      name = `${constellation.toUpperCase()}-${records.length}`;
+      i += 2;
+    } else if (i + 2 < lines.length && lines[i + 1]?.startsWith('1 ') && lines[i + 2]?.startsWith('2 ')) {
+      name = lines[i];
+      line1 = lines[i + 1];
+      line2 = lines[i + 2];
+      i += 3;
+    } else {
+      i++;
+      continue;
+    }
+    try {
+      const satrec = satellite.twoline2satrec(line1, line2);
+      if (satrec) {
+        records.push({ name, satrec, constellation });
+      }
+    } catch {
+      // skip bad TLE
+    }
+  }
+  return records;
+}
+
+function propagateSatellites(sats: SatRecord[], now: Date): { positions: Float32Array; colors: Float32Array; count: number } {
+  const gmst = satellite.gstime(now);
+  const positions = new Float32Array(sats.length * 3);
+  const colors = new Float32Array(sats.length * 3);
+  let count = 0;
+
+  for (let i = 0; i < sats.length; i++) {
+    try {
+      const posVel = satellite.propagate(sats[i].satrec, now);
+      if (!posVel || typeof posVel.position === 'boolean' || !posVel.position) continue;
+      const eci = posVel.position as { x: number; y: number; z: number };
+      const geodetic = satellite.eciToGeodetic(eci, gmst);
+      const lat = satellite.degreesLat(geodetic.latitude);
+      const lon = satellite.degreesLong(geodetic.longitude);
+      const altKm = geodetic.height;
+
+      // Map orbital altitude to visual radius on globe
+      // LEO (~550km) -> R*1.05, MEO (~20000km) -> R*1.07, GEO (~35786km) -> R*1.08
+      const R = 1;
+      let visualR = R * 1.05;
+      if (altKm > 30000) visualR = R * 1.08;
+      else if (altKm > 5000) visualR = R * 1.07;
+      else visualR = R * (1.04 + Math.min(altKm / 50000, 0.04));
+
+      const pos = latLonToVec3(lat, lon, visualR);
+      positions[count * 3] = pos.x;
+      positions[count * 3 + 1] = pos.y;
+      positions[count * 3 + 2] = pos.z;
+
+      const cHex = SAT_CONSTELLATION_COLORS[sats[i].constellation] || '#ffffff';
+      const c = new THREE.Color(cHex);
+      colors[count * 3] = c.r;
+      colors[count * 3 + 1] = c.g;
+      colors[count * 3 + 2] = c.b;
+
+      count++;
+    } catch {
+      // skip propagation errors
+    }
+  }
+
+  return { positions, colors, count };
 }
 
 // ─── MINI GLOBE COMPONENT ──────────────────────────────────────────────────
@@ -612,7 +776,6 @@ function MiniGlobe({
       for (const lineString of cable.coordinates) {
         if (lineString.length < 2) continue;
         const positions: number[] = [];
-        // Sample points to avoid too many vertices
         const step = Math.max(1, Math.floor(lineString.length / 50));
         for (let i = 0; i < lineString.length; i += step) {
           const coord = lineString[i];
@@ -701,8 +864,504 @@ function MiniGlobe({
   );
 }
 
+// ─── INFRA GLOBE COMPONENT (Full 3D Globe for main content area) ────────────
+interface InfraGlobeProps {
+  showCables: boolean;
+  showIXPs: boolean;
+  showCloud: boolean;
+  showSat: boolean;
+  showExposure: boolean;
+  showFlows: boolean;
+  showOutages: boolean;
+  showSatellites: boolean;
+  liveCables: LiveCable[];
+  useLiveCables: boolean;
+  exposurePoints: ExposurePoint[];
+  flows: FlowData[];
+  iodaOutages: IODAOutage[];
+  anomalies: AnomalyCorrelation[];
+  satRecords: SatRecord[];
+  satCounts: SatCounts;
+  onSelectItem: (item: SelectedItem | null) => void;
+}
+
+function InfraGlobe({
+  showCables, showIXPs, showCloud, showSat, showExposure, showFlows, showOutages,
+  showSatellites, liveCables, useLiveCables, exposurePoints, flows,
+  iodaOutages, anomalies, satRecords, satCounts, onSelectItem,
+}: InfraGlobeProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const frameRef = useRef<number>(0);
+  const globeRef = useRef<THREE.Mesh | null>(null);
+  const overlayGroupRef = useRef<THREE.Group | null>(null);
+  const mouseRef = useRef({ down: false, lastX: 0, lastY: 0 });
+  const rotRef = useRef({ x: 0.3, y: 0, autoRotate: true });
+  const satPointsRef = useRef<THREE.Points | null>(null);
+  const lastSatUpdateRef = useRef<number>(0);
+  const timeRef = useRef<number>(0);
+  // Clickable objects for raycasting
+  const clickableRef = useRef<THREE.Object3D[]>([]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const W = 830;
+    const H = 420;
+    const R = 1;
+
+    const scene = new THREE.Scene();
+    sceneRef.current = scene;
+
+    const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 100);
+    camera.position.set(0, 0, 3.2);
+    cameraRef.current = camera;
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    renderer.setSize(W, H);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setClearColor(0x050c19, 1);
+    rendererRef.current = renderer;
+
+    // Lighting
+    scene.add(new THREE.AmbientLight(0x334466, 0.6));
+    const dirLight = new THREE.DirectionalLight(0x88bbff, 0.8);
+    dirLight.position.set(5, 3, 5);
+    scene.add(dirLight);
+
+    // Globe sphere
+    const globeGeo = new THREE.SphereGeometry(R, 96, 96);
+    const textureLoader = new THREE.TextureLoader();
+    const globeMat = new THREE.MeshPhongMaterial({
+      color: 0x0a1628,
+      emissive: 0x040c1a,
+      emissiveIntensity: 0.3,
+      shininess: 15,
+      transparent: true,
+      opacity: 0.95,
+    });
+    textureLoader.load('/earth-night.jpg', (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      globeMat.map = tex;
+      globeMat.color.setHex(0x1a2a3a);
+      globeMat.emissive.setHex(0x050a12);
+      globeMat.emissiveIntensity = 0.15;
+      globeMat.opacity = 0.98;
+      globeMat.needsUpdate = true;
+    });
+    const globe = new THREE.Mesh(globeGeo, globeMat);
+    scene.add(globe);
+    globeRef.current = globe;
+
+    // Atmosphere
+    const atmosGeo = new THREE.SphereGeometry(R * 1.015, 64, 64);
+    const atmosMat = new THREE.MeshBasicMaterial({ color: 0x0077cc, transparent: true, opacity: 0.08, side: THREE.BackSide });
+    scene.add(new THREE.Mesh(atmosGeo, atmosMat));
+
+    // Outer halo
+    const haloGeo = new THREE.SphereGeometry(R * 1.08, 32, 32);
+    const haloMat = new THREE.MeshBasicMaterial({ color: 0x0055aa, transparent: true, opacity: 0.04, side: THREE.BackSide });
+    scene.add(new THREE.Mesh(haloGeo, haloMat));
+
+    // Grid lines
+    const gridMat = new THREE.LineBasicMaterial({ color: 0x0c2240, transparent: true, opacity: 0.15 });
+    for (let lat = -80; lat <= 80; lat += 20) {
+      const pts: THREE.Vector3[] = [];
+      for (let lon = 0; lon <= 360; lon += 4) pts.push(latLonToVec3(lat, lon - 180, R * 1.001));
+      scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), gridMat));
+    }
+    for (let lon = -180; lon < 180; lon += 30) {
+      const pts: THREE.Vector3[] = [];
+      for (let lat = -90; lat <= 90; lat += 4) pts.push(latLonToVec3(lat, lon, R * 1.001));
+      scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), gridMat));
+    }
+
+    // Country borders with filled land
+    addCountryBorders(scene, R, {
+      showFill: true,
+      showBorders: true,
+      fillColor: 0x0f2a4a,
+      fillOpacity: 0.5,
+      borderColor: 0x1a6090,
+      borderOpacity: 0.4,
+    });
+
+    // Stars background
+    const starPos: number[] = [];
+    for (let i = 0; i < 1500; i++) {
+      const sr = 40 + Math.random() * 100;
+      const stheta = Math.random() * Math.PI * 2;
+      const sphi = Math.acos(2 * Math.random() - 1);
+      starPos.push(sr * Math.sin(sphi) * Math.cos(stheta), sr * Math.sin(sphi) * Math.sin(stheta), sr * Math.cos(sphi));
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
+    scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0x4477aa, size: 0.15, transparent: true, opacity: 0.35 })));
+
+    // Overlay group (attached to globe so it rotates with it)
+    const overlayGroup = new THREE.Group();
+    overlayGroup.name = 'infraOverlays';
+    globe.add(overlayGroup);
+    overlayGroupRef.current = overlayGroup;
+
+    // ─── Mouse interaction ───
+    const onMouseDown = (e: MouseEvent) => {
+      mouseRef.current.down = true;
+      mouseRef.current.lastX = e.clientX;
+      mouseRef.current.lastY = e.clientY;
+      rotRef.current.autoRotate = false;
+    };
+    const onMouseUp = (e: MouseEvent) => {
+      mouseRef.current.down = false;
+      setTimeout(() => { rotRef.current.autoRotate = true; }, 3000);
+    };
+    const onMouseMove = (e: MouseEvent) => {
+      if (!mouseRef.current.down) return;
+      const dx = e.clientX - mouseRef.current.lastX;
+      const dy = e.clientY - mouseRef.current.lastY;
+      rotRef.current.y += dx * 0.005;
+      rotRef.current.x += dy * 0.005;
+      rotRef.current.x = Math.max(-1.2, Math.min(1.2, rotRef.current.x));
+      mouseRef.current.lastX = e.clientX;
+      mouseRef.current.lastY = e.clientY;
+    };
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      camera.position.z = Math.max(1.6, Math.min(6, camera.position.z + e.deltaY * 0.002));
+    };
+    const onClick = (e: MouseEvent) => {
+      if (!cameraRef.current || !globeRef.current) return;
+      const rect = canvas.getBoundingClientRect();
+      const mx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      const my = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(new THREE.Vector2(mx, my), camera);
+      const clickables = clickableRef.current;
+      if (clickables.length > 0) {
+        const hits = raycaster.intersectObjects(clickables, false);
+        if (hits.length > 0) {
+          const userData = hits[0].object.userData;
+          if (userData?.selectItem) {
+            onSelectItem(userData.selectItem);
+            return;
+          }
+        }
+      }
+    };
+
+    canvas.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mouseup', onMouseUp);
+    canvas.addEventListener('mousemove', onMouseMove);
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    canvas.addEventListener('click', onClick);
+
+    // ─── Animation loop ───
+    const animate = () => {
+      frameRef.current = requestAnimationFrame(animate);
+      timeRef.current += 0.016;
+
+      // Rotation
+      if (rotRef.current.autoRotate) {
+        rotRef.current.y += 0.0012;
+      }
+      globe.rotation.x = rotRef.current.x;
+      globe.rotation.y = rotRef.current.y;
+
+      // Pulse animated objects
+      const t = timeRef.current;
+      overlayGroup.children.forEach(child => {
+        if (child.userData?.pulseType === 'ixpRing' && child instanceof THREE.Mesh) {
+          const s = 1 + Math.sin(t * 3 + (child.userData.phase || 0)) * 0.4;
+          child.scale.set(s, s, s);
+          if (child.material instanceof THREE.MeshBasicMaterial) {
+            child.material.opacity = 0.2 + Math.sin(t * 3 + (child.userData.phase || 0)) * 0.2;
+          }
+        }
+        if (child.userData?.pulseType === 'outage' && child instanceof THREE.Mesh) {
+          const s = 1 + Math.sin(t * 4) * 0.3;
+          child.scale.set(s, s, s);
+          if (child.material instanceof THREE.MeshBasicMaterial) {
+            child.material.opacity = 0.5 + Math.sin(t * 4) * 0.4;
+          }
+        }
+        if (child.userData?.pulseType === 'anomaly' && child instanceof THREE.Mesh) {
+          const s = 1 + Math.sin(t * 3.5) * 0.25;
+          child.scale.set(s, s, s);
+        }
+      });
+
+      // Update satellite positions every 5 seconds
+      if (satPointsRef.current && satRecords.length > 0 && Date.now() - lastSatUpdateRef.current > 5000) {
+        const now = new Date();
+        const { positions: newPos, colors: newCol, count } = propagateSatellites(satRecords, now);
+        const geom = satPointsRef.current.geometry;
+        const posAttr = geom.getAttribute('position') as THREE.BufferAttribute;
+        const colAttr = geom.getAttribute('color') as THREE.BufferAttribute;
+        for (let j = 0; j < count * 3; j++) {
+          (posAttr.array as Float32Array)[j] = newPos[j];
+          (colAttr.array as Float32Array)[j] = newCol[j];
+        }
+        posAttr.needsUpdate = true;
+        colAttr.needsUpdate = true;
+        geom.setDrawRange(0, count);
+        lastSatUpdateRef.current = Date.now();
+      }
+
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    return () => {
+      cancelAnimationFrame(frameRef.current);
+      canvas.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mouseup', onMouseUp);
+      canvas.removeEventListener('mousemove', onMouseMove);
+      canvas.removeEventListener('wheel', onWheel);
+      canvas.removeEventListener('click', onClick);
+      renderer.dispose();
+      scene.clear();
+    };
+  }, []); // Core setup runs once
+
+  // ─── Rebuild overlays when data/toggles change ───
+  useEffect(() => {
+    const overlayGroup = overlayGroupRef.current;
+    const globe = globeRef.current;
+    if (!overlayGroup || !globe) return;
+
+    // Clear previous overlays
+    while (overlayGroup.children.length > 0) {
+      const child = overlayGroup.children[0];
+      overlayGroup.remove(child);
+      if (child instanceof THREE.Mesh) { child.geometry.dispose(); (child.material as THREE.Material).dispose(); }
+      if (child instanceof THREE.Line) { child.geometry.dispose(); (child.material as THREE.Material).dispose(); }
+      if (child instanceof THREE.Points) { child.geometry.dispose(); (child.material as THREE.Material).dispose(); }
+    }
+    clickableRef.current = [];
+    satPointsRef.current = null;
+
+    const R = 1;
+
+    // ─── Submarine Cables ───
+    if (showCables) {
+      const cables = useLiveCables && liveCables.length > 0 ? liveCables.slice(0, 60) : [];
+      // Live cables
+      for (const cable of cables) {
+        for (const lineString of cable.coordinates) {
+          if (lineString.length < 2) continue;
+          const positions: number[] = [];
+          const step = Math.max(1, Math.floor(lineString.length / 60));
+          for (let i = 0; i < lineString.length; i += step) {
+            const coord = lineString[i];
+            const v = latLonToVec3(coord[1], coord[0], R * 1.002);
+            positions.push(v.x, v.y, v.z);
+          }
+          if (positions.length >= 6) {
+            const lineGeo = new THREE.BufferGeometry();
+            lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            const cableColor = cable.color ? new THREE.Color(cable.color) : new THREE.Color(0x00ccff);
+            const lineMat = new THREE.LineBasicMaterial({ color: cableColor, transparent: true, opacity: 0.45 });
+            const line = new THREE.Line(lineGeo, lineMat);
+            line.userData = { selectItem: { type: 'cable', name: cable.name, detail: `Live submarine cable from TeleGeography · ${cable.segmentCount} segments`, extra: 'Source: submarinecablemap.com' } };
+            overlayGroup.add(line);
+            clickableRef.current.push(line);
+          }
+        }
+      }
+      // Seed cables (if not using live)
+      if (!useLiveCables || liveCables.length === 0) {
+        for (const cable of CABLES) {
+          const pts: THREE.Vector3[] = [];
+          for (const [lon, lat] of cable.coords) {
+            pts.push(latLonToVec3(lat, lon, R * 1.002));
+          }
+          if (pts.length >= 2) {
+            const lineGeo = new THREE.BufferGeometry().setFromPoints(pts);
+            const lineMat = new THREE.LineBasicMaterial({ color: new THREE.Color(cable.color), transparent: true, opacity: 0.6 });
+            const line = new THREE.Line(lineGeo, lineMat);
+            line.userData = { selectItem: { type: 'cable', name: cable.name, detail: `Capacity: ${cable.capacity} | Owners: ${cable.owners}` } };
+            overlayGroup.add(line);
+            clickableRef.current.push(line);
+          }
+        }
+      }
+    }
+
+    // ─── IXPs ───
+    if (showIXPs) {
+      for (const ixp of IXPS) {
+        const pos = latLonToVec3(ixp.lat, ixp.lon, R * 1.005);
+        // Core sphere
+        const dotGeo = new THREE.SphereGeometry(ixp.tier === 1 ? 0.02 : 0.014, 12, 12);
+        const dotMat = new THREE.MeshBasicMaterial({ color: 0x00ccff, transparent: true, opacity: 0.9 });
+        const dot = new THREE.Mesh(dotGeo, dotMat);
+        dot.position.copy(pos);
+        dot.userData = { selectItem: { type: 'ixp', name: ixp.name, detail: `${ixp.throughput} peak throughput · ${ixp.members} member networks`, extra: IXP_STRATEGIC[ixp.name] } };
+        overlayGroup.add(dot);
+        clickableRef.current.push(dot);
+        // Animated ring
+        const ringGeo = new THREE.RingGeometry(0.025, 0.04, 20);
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0x00ccff, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
+        const ring = new THREE.Mesh(ringGeo, ringMat);
+        ring.position.copy(pos);
+        ring.lookAt(pos.clone().multiplyScalar(2));
+        ring.userData = { pulseType: 'ixpRing', phase: Math.random() * 6.28 };
+        overlayGroup.add(ring);
+      }
+    }
+
+    // ─── Cloud Regions ───
+    if (showCloud) {
+      for (const cr of CLOUD_REGIONS) {
+        const pos = latLonToVec3(cr.lat, cr.lon, R * 1.005);
+        const cubeGeo = new THREE.BoxGeometry(0.02, 0.02, 0.02);
+        const provColor = cr.provider === 'AWS' ? 0xf59e0b : cr.provider === 'Azure' ? 0x3b82f6 : 0xef4444;
+        const cubeMat = new THREE.MeshBasicMaterial({ color: provColor, transparent: true, opacity: 0.8 });
+        const cube = new THREE.Mesh(cubeGeo, cubeMat);
+        cube.position.copy(pos);
+        cube.lookAt(pos.clone().multiplyScalar(2));
+        cube.userData = { selectItem: { type: 'cloud', name: `${cr.provider} ${cr.name}`, detail: `Region: ${cr.region} · ${cr.az} Availability Zones` } };
+        overlayGroup.add(cube);
+        clickableRef.current.push(cube);
+      }
+    }
+
+    // ─── Satellite coverage bands (static shells) ───
+    if (showSat) {
+      const bandConfigs = [
+        { name: 'Starlink', innerR: R * 1.05, color: 0x00e5ff, opacity: 0.04 },
+        { name: 'OneWeb', innerR: R * 1.06, color: 0x6366f1, opacity: 0.03 },
+        { name: 'GEO', innerR: R * 1.08, color: 0xeab308, opacity: 0.025 },
+      ];
+      for (const band of bandConfigs) {
+        const shellGeo = new THREE.SphereGeometry(band.innerR, 48, 48);
+        const shellMat = new THREE.MeshBasicMaterial({ color: band.color, transparent: true, opacity: band.opacity, side: THREE.DoubleSide, depthWrite: false });
+        overlayGroup.add(new THREE.Mesh(shellGeo, shellMat));
+      }
+    }
+
+    // ─── Exposure Points ───
+    if (showExposure && exposurePoints.length > 0) {
+      for (const ep of exposurePoints) {
+        const pos = latLonToVec3(ep.lat, ep.lon, R * 1.003);
+        const sz = ep.vuln_count > 0 ? 0.008 : 0.005;
+        const dotGeo = new THREE.SphereGeometry(sz, 6, 6);
+        const cHex = QUERY_COLORS[ep.query] || QUERY_COLORS.default;
+        const dotMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(cHex), transparent: true, opacity: 0.7 });
+        const dot = new THREE.Mesh(dotGeo, dotMat);
+        dot.position.copy(pos);
+        dot.userData = { selectItem: { type: 'exposure', name: `${ep.ip}:${ep.port}`, detail: `${ep.query.replace(/_/g, ' ')} · ${ep.product || 'unknown'} · ${ep.country}`, extra: ep.vuln_count > 0 ? `${ep.vuln_count} known vulnerabilities` : undefined } };
+        overlayGroup.add(dot);
+        clickableRef.current.push(dot);
+      }
+    }
+
+    // ─── Attack Flow Arcs ───
+    if (showFlows && flows.length > 0) {
+      const targets: [number, number][] = [[-77.5, 38.9], [8.6, 50.1], [139.7, 35.7], [-122.3, 47.6], [4.9, 52.4], [103.8, 1.3]];
+      for (const flow of flows.slice(0, 15)) {
+        const srcCoords = COUNTRY_COORDS[flow.source_country];
+        if (!srcCoords) continue;
+        const [srcLat, srcLon] = srcCoords;
+        // Pick furthest target
+        let best = targets[0];
+        let bestDist = 0;
+        for (const t of targets) {
+          const d = Math.abs(srcLon - t[0]) + Math.abs(srcLat - t[1]);
+          if (d > bestDist) { bestDist = d; best = t; }
+        }
+        const v1 = latLonToVec3(srcLat, srcLon, R * 1.003);
+        const v2 = latLonToVec3(best[1], best[0], R * 1.003);
+        const mid = v1.clone().add(v2).multiplyScalar(0.5);
+        const dist = v1.distanceTo(v2);
+        mid.normalize().multiplyScalar(R + dist * 0.35);
+        const curve = new THREE.QuadraticBezierCurve3(v1, mid, v2);
+        const arcPts = curve.getPoints(40);
+        const arcGeo = new THREE.BufferGeometry().setFromPoints(arcPts);
+        const arcColor = VECTOR_COLORS[flow.vector] || '#6b7280';
+        const arcMat = new THREE.LineBasicMaterial({ color: new THREE.Color(arcColor), transparent: true, opacity: 0.5 });
+        const arc = new THREE.Line(arcGeo, arcMat);
+        arc.userData = { selectItem: { type: 'flow', name: `${flow.source_country} > ${flow.vector}`, detail: `${flow.event_count.toLocaleString()} events · ${flow.unique_ips} unique IPs${flow.top_port ? ` · port ${flow.top_port}` : ''}` } };
+        overlayGroup.add(arc);
+        clickableRef.current.push(arc);
+      }
+    }
+
+    // ─── IODA Outage markers ───
+    if (showOutages) {
+      for (const outage of iodaOutages) {
+        const coords = COUNTRY_COORDS[outage.countryCode];
+        if (!coords) continue;
+        const pos = latLonToVec3(coords[0], coords[1], R * 1.015);
+        const outGeo = new THREE.SphereGeometry(0.025, 12, 12);
+        const outMat = new THREE.MeshBasicMaterial({ color: 0xff1744, transparent: true, opacity: 0.9 });
+        const outDot = new THREE.Mesh(outGeo, outMat);
+        outDot.position.copy(pos);
+        outDot.userData = { pulseType: 'outage', selectItem: { type: 'outage', name: `${outage.country} Outage`, detail: `${outage.datasource}: ${outage.signalDrop}% signal drop`, extra: `Severity: ${outage.severity}` } };
+        overlayGroup.add(outDot);
+        clickableRef.current.push(outDot);
+      }
+      // Anomaly escalation markers
+      for (const anom of anomalies.filter(a => a.severity === 'critical' || a.severity === 'warning')) {
+        const coords = COUNTRY_COORDS[anom.countryCode];
+        if (!coords) continue;
+        const pos = latLonToVec3(coords[0], coords[1], R * 1.025);
+        const anomGeo = new THREE.SphereGeometry(0.018, 10, 10);
+        const anomColor = anom.severity === 'critical' ? 0xff1744 : 0xff9800;
+        const anomMat = new THREE.MeshBasicMaterial({ color: anomColor, transparent: true, opacity: 0.8 });
+        const anomDot = new THREE.Mesh(anomGeo, anomMat);
+        anomDot.position.copy(pos);
+        anomDot.userData = { pulseType: 'anomaly' };
+        overlayGroup.add(anomDot);
+      }
+    }
+
+    // ─── Satellite Points (real tracked) ───
+    if (showSatellites && satRecords.length > 0) {
+      const now = new Date();
+      const { positions, colors, count } = propagateSatellites(satRecords, now);
+      const maxCount = satRecords.length;
+      const satGeo = new THREE.BufferGeometry();
+      const posBuffer = new THREE.Float32BufferAttribute(new Float32Array(maxCount * 3), 3);
+      const colBuffer = new THREE.Float32BufferAttribute(new Float32Array(maxCount * 3), 3);
+      for (let j = 0; j < count * 3; j++) {
+        (posBuffer.array as Float32Array)[j] = positions[j];
+        (colBuffer.array as Float32Array)[j] = colors[j];
+      }
+      satGeo.setAttribute('position', posBuffer);
+      satGeo.setAttribute('color', colBuffer);
+      satGeo.setDrawRange(0, count);
+      const satMat = new THREE.PointsMaterial({ size: 1.5, sizeAttenuation: true, vertexColors: true, transparent: true, opacity: 0.85, depthWrite: false });
+      const satPoints = new THREE.Points(satGeo, satMat);
+      overlayGroup.add(satPoints);
+      satPointsRef.current = satPoints;
+      lastSatUpdateRef.current = Date.now();
+    }
+
+  }, [showCables, showIXPs, showCloud, showSat, showExposure, showFlows, showOutages, showSatellites,
+      liveCables, useLiveCables, exposurePoints, flows, iodaOutages, anomalies, satRecords]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={830}
+      height={420}
+      style={{
+        width: '830px', height: '420px', maxWidth: '100%',
+        display: 'block', borderRadius: '6px', cursor: 'grab',
+        background: 'rgba(5,12,25,1)',
+      }}
+    />
+  );
+}
+
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 export default function InfrastructurePanel({ onClose }: InfrastructurePanelProps) {
+  const [viewMode, setViewMode] = useState<'flat' | 'globe'>('flat');
+
   const [showCables, setShowCables] = useState(true);
   const [showIXPs,   setShowIXPs]   = useState(true);
   const [showCloud,  setShowCloud]  = useState(false);
@@ -712,6 +1371,7 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
   const [showCountryThreat, setShowCountryThreat] = useState(true);
   const [showOutages, setShowOutages] = useState(true);
   const [useLiveCables, setUseLiveCables] = useState(true);
+  const [showSatellites, setShowSatellites] = useState(false);
 
   const [hoveredCable, setHoveredCable] = useState<string | null>(null);
   const [hoveredIXP,   setHoveredIXP]   = useState<string | null>(null);
@@ -728,22 +1388,27 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
   const [countryPaths, setCountryPaths] = useState<CountryGeo[]>([]);
   const [dataStatus, setDataStatus] = useState<'loading' | 'live' | 'fallback'>('loading');
 
-  // ─── NEW: Live cables state ──────────────────────────────
+  // ─── Live cables state ──────────────────────────────
   const [liveCables, setLiveCables] = useState<LiveCable[]>([]);
   const [liveCableCount, setLiveCableCount] = useState(0);
 
-  // ─── NEW: Cloud health state ──────────────────────────────
+  // ─── Cloud health state ──────────────────────────────
   const [cloudHealth, setCloudHealth] = useState<CloudHealthState>({
     cfOperational: 0, cfDegraded: 0, cfOutage: 0,
     cfComponents: [], gcpIncidents: [], loaded: false,
   });
 
-  // ─── NEW: IODA outage state ──────────────────────────────
+  // ─── IODA outage state ──────────────────────────────
   const [iodaOutages, setIodaOutages] = useState<IODAOutage[]>([]);
   const [iodaLoaded, setIodaLoaded] = useState(false);
 
-  // ─── NEW: Anomaly correlations ──────────────────────────────
+  // ─── Anomaly correlations ──────────────────────────────
   const [anomalies, setAnomalies] = useState<AnomalyCorrelation[]>([]);
+
+  // ─── Satellite state ──────────────────────────────
+  const [satRecords, setSatRecords] = useState<SatRecord[]>([]);
+  const [satCounts, setSatCounts] = useState<SatCounts>({ starlink: 0, oneweb: 0, geo: 0, iridium: 0 });
+  const [satStatus, setSatStatus] = useState<'idle' | 'loading' | 'live' | 'fallback'>('idle');
 
   const SVG_W = 830;
   const SVG_H = 420;
@@ -767,7 +1432,6 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
 
       let liveCount = 0;
 
-      // Exposure points
       const geoData = results[0].status === 'fulfilled' ? results[0].value : null;
       if (geoData?.features) {
         setExposurePoints(geoData.features.map((f: any) => ({
@@ -778,35 +1442,30 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
         liveCount++;
       }
 
-      // Attack flows
       const flowData = results[1].status === 'fulfilled' ? results[1].value : null;
       if (flowData?.flows) {
         setFlows(flowData.flows);
         liveCount++;
       }
 
-      // Country threats
       const countryData = results[2].status === 'fulfilled' ? results[2].value : null;
       if (countryData?.countries) {
         setCountryThreats(countryData.countries);
         liveCount++;
       }
 
-      // Exposure summary
       const summaryData = results[3].status === 'fulfilled' ? results[3].value : null;
       if (summaryData) {
         setSummary(summaryData);
         liveCount++;
       }
 
-      // Timeline
       const timelineData = results[4].status === 'fulfilled' ? results[4].value : null;
       if (timelineData?.series) {
         setTimeline(timelineData.series);
         liveCount++;
       }
 
-      // Country GeoJSON for map
       const geoJson = results[5].status === 'fulfilled' ? results[5].value : null;
       if (geoJson) {
         const paths = geoToSvgPaths(geoJson, SVG_W, SVG_H);
@@ -821,7 +1480,7 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
     return () => { cancelled = true; };
   }, []);
 
-  // ─── NEW: Fetch TeleGeography submarine cable data ──────────────────
+  // ─── Fetch TeleGeography submarine cable data ──────────────────
   useEffect(() => {
     let cancelled = false;
 
@@ -848,7 +1507,7 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
             } else {
               continue;
             }
-            const totalSegments = coords.reduce((sum, ls) => sum + ls.length, 0);
+            const totalSegments = coords.reduce((sum: number, ls: number[][]) => sum + ls.length, 0);
             parsed.push({
               id: feature.properties.id || feature.properties.name || '',
               name: feature.properties.name || 'Unknown',
@@ -857,14 +1516,11 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
               segmentCount: totalSegments,
             });
           }
-          // Sort by segment count (longest cables first)
           parsed.sort((a, b) => b.segmentCount - a.segmentCount);
           setLiveCableCount(parsed.length);
-          // Keep top 100 for SVG rendering
           setLiveCables(parsed.slice(0, 100));
         }
       } catch {
-        // Fallback: keep using seed cables
         setLiveCables([]);
       }
     }
@@ -873,7 +1529,7 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
     return () => { cancelled = true; };
   }, []);
 
-  // ─── NEW: Fetch Cloud Health data ──────────────────────────────
+  // ─── Fetch Cloud Health data ──────────────────────────────
   useEffect(() => {
     let cancelled = false;
 
@@ -891,11 +1547,9 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
       const cfComps: CloudflareComponent[] = [];
       const gcpIncs: GCPIncident[] = [];
 
-      // Cloudflare components
       const cfData = results[0].status === 'fulfilled' ? results[0].value : null;
       if (cfData?.components && Array.isArray(cfData.components)) {
         for (const comp of cfData.components) {
-          // Filter to components with airport codes: name contains (XXX) pattern
           const airportMatch = comp.name?.match(/\(([A-Z]{3})\)/);
           if (!airportMatch) continue;
           const status = comp.status || 'operational';
@@ -909,14 +1563,12 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
           if (status === 'operational') cfOp++;
           else if (status === 'degraded_performance') cfDeg++;
           else if (status === 'partial_outage' || status === 'major_outage') cfOut++;
-          else cfOp++; // default to operational
+          else cfOp++;
         }
       }
 
-      // GCP incidents
       const gcpData = results[1].status === 'fulfilled' ? results[1].value : null;
       if (Array.isArray(gcpData)) {
-        // Get only recent/active incidents (no end date or end within 24h)
         const now = Date.now();
         const dayAgo = now - 86400000;
         for (const inc of gcpData.slice(0, 50)) {
@@ -947,13 +1599,12 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
     return () => { cancelled = true; };
   }, []);
 
-  // ─── NEW: Fetch IODA outage data ──────────────────────────────
+  // ─── Fetch IODA outage data ──────────────────────────────
   useEffect(() => {
     if (countryThreats.length === 0) return;
     let cancelled = false;
 
     async function fetchIODA() {
-      // Get top 5 countries by threat count
       const sorted = [...countryThreats].sort((a, b) => b.total - a.total);
       const top5 = sorted.slice(0, 5);
 
@@ -976,14 +1627,12 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
         const cc = top5[idx].code;
         const name = COUNTRY_NAMES[cc] || cc;
 
-        // Check each datasource for signal drops
         if (data?.data && Array.isArray(data.data)) {
           for (const ds of data.data) {
             const dsName = ds.datasource || ds.source || 'unknown';
             const values = ds.values || ds.signal || [];
             if (!Array.isArray(values) || values.length < 2) continue;
 
-            // Calculate baseline (average of first half) vs recent (last quarter)
             const midpoint = Math.floor(values.length / 2);
             const baseline = values.slice(0, midpoint).filter((v: number) => v != null && v > 0);
             const recent = values.slice(-Math.floor(values.length / 4)).filter((v: number) => v != null && v > 0);
@@ -996,7 +1645,6 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
             if (baselineAvg === 0) continue;
             const dropPct = ((baselineAvg - recentAvg) / baselineAvg) * 100;
 
-            // Threshold: >15% drop is significant
             if (dropPct > 15) {
               let severity: 'watch' | 'warning' | 'critical' = 'watch';
               if (dropPct > 50) severity = 'critical';
@@ -1022,17 +1670,15 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
     return () => { cancelled = true; };
   }, [countryThreats]);
 
-  // ─── NEW: Compute anomaly correlations ──────────────────────────────
+  // ─── Compute anomaly correlations ──────────────────────────────
   useEffect(() => {
     if (flows.length === 0 || !iodaLoaded) return;
 
-    // Compute flow volume per country
     const flowByCountry: Record<string, number> = {};
     for (const f of flows) {
       flowByCountry[f.source_country] = (flowByCountry[f.source_country] || 0) + f.event_count;
     }
 
-    // Calculate average flow volume
     const flowValues = Object.values(flowByCountry);
     const avgFlow = flowValues.length > 0
       ? flowValues.reduce((a, b) => a + b, 0) / flowValues.length
@@ -1040,19 +1686,16 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
 
     const correlations: AnomalyCorrelation[] = [];
 
-    // Check each country with high flow AND outage
     for (const [cc, total] of Object.entries(flowByCountry)) {
       if (avgFlow === 0) continue;
       const ratio = total / avgFlow;
       const pctIncrease = Math.round((ratio - 1) * 100);
 
-      // Only flag if significantly above average
       if (pctIncrease < 100) continue;
 
       const countryOutages = iodaOutages.filter(o => o.countryCode === cc);
       const hasOutage = countryOutages.length > 0;
 
-      // Must have both high flow AND outage to correlate
       if (!hasOutage && pctIncrease < 300) continue;
 
       let severity: 'watch' | 'warning' | 'critical' = 'watch';
@@ -1085,12 +1728,81 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
       });
     }
 
-    // Sort by severity then flow increase
     const severityOrder = { critical: 0, warning: 1, watch: 2 };
     correlations.sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity] || b.flowIncrease - a.flowIncrease);
 
     setAnomalies(correlations.slice(0, 10));
   }, [flows, iodaOutages, iodaLoaded]);
+
+  // ─── Fetch satellite TLE data (on toggle or globe mode) ─────────────────
+  useEffect(() => {
+    if (!showSatellites) return;
+    if (satRecords.length > 0) return; // already loaded
+    let cancelled = false;
+    setSatStatus('loading');
+
+    async function fetchSatellites() {
+      let allRecords: SatRecord[] = [];
+      const counts: SatCounts = { starlink: 0, oneweb: 0, geo: 0, iridium: 0 };
+      let usedFallback = false;
+
+      for (const src of TLE_SOURCES) {
+        try {
+          const resp = await fetch(src.url, { signal: AbortSignal.timeout(8000) });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const text = await resp.text();
+          const records = parseTLEText(text, src.constellation, src.maxSats);
+          allRecords = allRecords.concat(records);
+          counts[src.constellation as keyof SatCounts] = records.length;
+          console.log(`[Satellites] Loaded ${records.length} ${src.constellation} TLEs from CelesTrak`);
+        } catch (err) {
+          console.warn(`[Satellites] Failed to fetch ${src.constellation} TLEs:`, err);
+        }
+      }
+
+      // If we got very few, use fallback
+      if (allRecords.length < 10) {
+        console.warn('[Satellites] CelesTrak unreachable, using fallback TLE dataset. Set up a backend proxy for production.');
+        usedFallback = true;
+        for (const fb of FALLBACK_TLES) {
+          try {
+            const satrec = satellite.twoline2satrec(fb.line1, fb.line2);
+            if (satrec) {
+              allRecords.push({ name: fb.name, satrec, constellation: fb.constellation });
+              counts[fb.constellation as keyof SatCounts] = (counts[fb.constellation as keyof SatCounts] || 0) + 1;
+            }
+          } catch { /* skip */ }
+        }
+      }
+
+      // Cap at 2000 total for performance
+      if (allRecords.length > 2000) {
+        // Sample proportionally
+        const sampled: SatRecord[] = [];
+        const ratio = 2000 / allRecords.length;
+        for (const rec of allRecords) {
+          if (Math.random() < ratio) sampled.push(rec);
+          if (sampled.length >= 2000) break;
+        }
+        allRecords = sampled;
+        // Recount
+        counts.starlink = allRecords.filter(r => r.constellation === 'starlink').length;
+        counts.oneweb = allRecords.filter(r => r.constellation === 'oneweb').length;
+        counts.geo = allRecords.filter(r => r.constellation === 'geo').length;
+        counts.iridium = allRecords.filter(r => r.constellation === 'iridium').length;
+      }
+
+      if (!cancelled) {
+        setSatRecords(allRecords);
+        setSatCounts(counts);
+        setSatStatus(usedFallback ? 'fallback' : 'live');
+        console.log(`[Satellites] Total tracked: ${allRecords.length}`);
+      }
+    }
+
+    fetchSatellites();
+    return () => { cancelled = true; };
+  }, [showSatellites]);
 
   // Convert lon/lat to SVG coords
   const m = (lon: number, lat: number): [number, number] => mercator(lon, lat, SVG_W, SVG_H);
@@ -1133,7 +1845,6 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
 
   // Countries with IODA outages for special rendering
   const outageCountryCodes = new Set(iodaOutages.map(o => o.countryCode));
-  // Countries with anomaly escalation
   const escalationCodes = new Set(anomalies.filter(a => a.severity === 'critical').map(a => a.countryCode));
 
   const getCountryFill = (iso: string): string => {
@@ -1163,20 +1874,16 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
   // Cloud region health status color
   const getCloudRegionHealthBorder = useCallback((region: CloudRegion): string => {
     if (!cloudHealth.loaded) return PROVIDER_COLORS[region.provider];
-    // Check if any CF components near this region have issues
     const degradedComps = cloudHealth.cfComponents.filter(c =>
       c.status === 'degraded_performance'
     );
     const outageComps = cloudHealth.cfComponents.filter(c =>
       c.status === 'partial_outage' || c.status === 'major_outage'
     );
-
-    // Check GCP incidents for GCP regions
     if (region.provider === 'GCP') {
       const activeGCP = cloudHealth.gcpIncidents.filter(i => !i.end);
       if (activeGCP.length > 0) return '#ff9800';
     }
-
     if (outageComps.length > 0) return '#ef4444';
     if (degradedComps.length > 0) return '#ff9800';
     return '#22c55e';
@@ -1245,9 +1952,11 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
                   INFRASTRUCTURE TOPOLOGY
                 </div>
                 <div style={{ fontSize: '10px', color: C.muted, marginTop: '2px', letterSpacing: '0.04em' }}>
-                  Cables · IXPs · Cloud · Exposure · Attack Flows · Threat Map · Outages
+                  Cables · IXPs · Cloud · Exposure · Attack Flows · Threat Map · Outages · Satellites
                 </div>
               </div>
+              {/* View mode toggle */}
+              <ViewModeToggle mode={viewMode} onChange={setViewMode} />
               {/* Live data badge */}
               <div style={{
                 fontSize: '9px', fontWeight: 700, letterSpacing: '0.1em',
@@ -1280,6 +1989,18 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
                   border: '1px solid rgba(255,23,68,0.3)',
                 }}>
                   {iodaOutages.length} OUTAGE{iodaOutages.length !== 1 ? 'S' : ''}
+                </div>
+              )}
+              {/* Satellite badge */}
+              {satRecords.length > 0 && (
+                <div style={{
+                  fontSize: '9px', fontWeight: 700, letterSpacing: '0.1em',
+                  padding: '2px 8px', borderRadius: '3px',
+                  background: satStatus === 'live' ? 'rgba(0,229,255,0.1)' : 'rgba(234,179,8,0.1)',
+                  color: satStatus === 'live' ? '#00e5ff' : '#eab308',
+                  border: `1px solid ${satStatus === 'live' ? 'rgba(0,229,255,0.25)' : 'rgba(234,179,8,0.25)'}`,
+                }}>
+                  {satRecords.length} SATS
                 </div>
               )}
             </div>
@@ -1329,26 +2050,41 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
             )}
           </div>
 
-          {/* Mini 3D Globe (top-right) */}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', marginLeft: '12px' }}>
-            <MiniGlobe
-              liveCables={liveCables}
-              ixps={IXPS}
-              cloudRegions={CLOUD_REGIONS}
-              outageCountries={Array.from(outageCountryCodes)}
-            />
+          {/* Mini 3D Globe (top-right) — HIDDEN in globe mode (redundant) */}
+          {viewMode === 'flat' && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', marginLeft: '12px' }}>
+              <MiniGlobe
+                liveCables={liveCables}
+                ixps={IXPS}
+                cloudRegions={CLOUD_REGIONS}
+                outageCountries={Array.from(outageCountryCodes)}
+              />
+              <button
+                onClick={onClose}
+                style={{
+                  background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.border}`,
+                  borderRadius: '4px', color: C.muted, fontSize: '10px',
+                  padding: '2px 12px', cursor: 'pointer',
+                  fontFamily: C.mono, letterSpacing: '0.06em',
+                }}
+              >
+                CLOSE
+              </button>
+            </div>
+          )}
+          {viewMode === 'globe' && (
             <button
               onClick={onClose}
               style={{
                 background: 'rgba(255,255,255,0.05)', border: `1px solid ${C.border}`,
                 borderRadius: '4px', color: C.muted, fontSize: '10px',
-                padding: '2px 12px', cursor: 'pointer',
-                fontFamily: C.mono, letterSpacing: '0.06em',
+                padding: '2px 12px', cursor: 'pointer', alignSelf: 'flex-start',
+                fontFamily: C.mono, letterSpacing: '0.06em', marginLeft: '12px',
               }}
             >
               CLOSE
             </button>
-          </div>
+          )}
         </div>
 
         {/* Toggle row */}
@@ -1371,390 +2107,464 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
               color="rgba(20,184,166"
             />
           )}
+          <ToggleBtn
+            label={satStatus === 'loading' ? 'SATS...' : `SATS${satRecords.length > 0 ? ` (${satRecords.length})` : ''}`}
+            active={showSatellites}
+            onClick={() => setShowSatellites(v => !v)}
+            color="rgba(0,229,255"
+          />
         </div>
       </div>
 
       {/* ── SCROLLABLE BODY ── */}
       <div style={{ overflowY: 'auto', flexGrow: 1, padding: '10px 16px 16px' }}>
 
-        {/* ── MAP ── */}
-        <div
-          style={{ position: 'relative', borderRadius: '6px', overflow: 'hidden', cursor: 'crosshair' }}
-          onMouseMove={handleSvgMouseMove}
-          onMouseLeave={() => setTooltip(null)}
-        >
-          <svg
-            width={SVG_W}
-            height={SVG_H}
-            viewBox={`0 0 ${SVG_W} ${SVG_H}`}
-            style={{ display: 'block', background: 'rgba(5,12,25,1)', maxWidth: '100%' }}
+        {/* ── MAP / GLOBE VIEW ── */}
+        {viewMode === 'flat' ? (
+          /* ─────────── FLAT MAP (100% preserved SVG Mercator) ─────────── */
+          <div
+            style={{ position: 'relative', borderRadius: '6px', overflow: 'hidden', cursor: 'crosshair' }}
+            onMouseMove={handleSvgMouseMove}
+            onMouseLeave={() => setTooltip(null)}
           >
-            {/* SVG defs for outage pattern */}
-            <defs>
-              <pattern id="outage-hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
-                <line x1="0" y1="0" x2="0" y2="6" stroke="rgba(255,23,68,0.3)" strokeWidth="1.5" />
-              </pattern>
-            </defs>
+            <svg
+              width={SVG_W}
+              height={SVG_H}
+              viewBox={`0 0 ${SVG_W} ${SVG_H}`}
+              style={{ display: 'block', background: 'rgba(5,12,25,1)', maxWidth: '100%' }}
+            >
+              {/* SVG defs for outage pattern */}
+              <defs>
+                <pattern id="outage-hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+                  <line x1="0" y1="0" x2="0" y2="6" stroke="rgba(255,23,68,0.3)" strokeWidth="1.5" />
+                </pattern>
+              </defs>
 
-            {/* ── GRID ── */}
-            {latLines.map(lat => {
-              const [, y] = m(0, lat);
-              const isEquator = lat === 0;
-              return (
-                <line
-                  key={`lat${lat}`}
-                  x1={0} y1={y} x2={SVG_W} y2={y}
-                  stroke={isEquator ? 'rgba(0,180,255,0.15)' : 'rgba(0,180,255,0.06)'}
-                  strokeWidth={isEquator ? 0.8 : 0.4}
-                />
-              );
-            })}
-            {lonLines.map(lon => {
-              const [x] = m(lon, 0);
-              return (
-                <line
-                  key={`lon${lon}`}
-                  x1={x} y1={0} x2={x} y2={SVG_H}
-                  stroke="rgba(0,180,255,0.06)"
-                  strokeWidth={0.4}
-                />
-              );
-            })}
+              {/* ── GRID ── */}
+              {latLines.map(lat => {
+                const [, y] = m(0, lat);
+                const isEquator = lat === 0;
+                return (
+                  <line
+                    key={`lat${lat}`}
+                    x1={0} y1={y} x2={SVG_W} y2={y}
+                    stroke={isEquator ? 'rgba(0,180,255,0.15)' : 'rgba(0,180,255,0.06)'}
+                    strokeWidth={isEquator ? 0.8 : 0.4}
+                  />
+                );
+              })}
+              {lonLines.map(lon => {
+                const [x] = m(lon, 0);
+                return (
+                  <line
+                    key={`lon${lon}`}
+                    x1={x} y1={0} x2={x} y2={SVG_H}
+                    stroke="rgba(0,180,255,0.06)"
+                    strokeWidth={0.4}
+                  />
+                );
+              })}
 
-            {/* ── COUNTRIES (50m GeoJSON) with threat shading ── */}
-            {countryPaths.map(cp => (
-              <g key={cp.iso + cp.name}>
-                <path
-                  d={cp.path}
-                  fill={getCountryFill(cp.iso)}
-                  stroke={getCountryStroke(cp.iso)}
-                  strokeWidth={getCountryStrokeWidth(cp.iso)}
-                  onMouseEnter={(e) => {
-                    const ct = countryThreats.find(c => c.code === cp.iso);
-                    const outage = iodaOutages.find(o => o.countryCode === cp.iso);
-                    if (ct || cp.name || outage) {
-                      const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
-                      let text = '';
-                      if (ct) {
-                        text = `${cp.name} (${cp.iso}) · ${ct.total.toLocaleString()} events · Top: ${Object.entries(ct.vectors).sort((a,b) => b[1]-a[1]).slice(0,2).map(([v,c]) => `${v} ${c.toLocaleString()}`).join(', ')}`;
-                      } else {
-                        text = `${cp.name} (${cp.iso})`;
-                      }
-                      if (outage) {
-                        text += ` | OUTAGE: ${outage.datasource} ${outage.signalDrop}% drop`;
-                      }
-                      setTooltip({
-                        x: e.clientX - (rect?.left ?? 0),
-                        y: e.clientY - (rect?.top ?? 0),
-                        text,
-                      });
-                    }
-                  }}
-                  onMouseLeave={() => setTooltip(null)}
-                  style={{ cursor: 'pointer' }}
-                />
-                {/* Outage hatch overlay */}
-                {showOutages && outageCountryCodes.has(cp.iso) && (
+              {/* ── COUNTRIES (50m GeoJSON) with threat shading ── */}
+              {countryPaths.map(cp => (
+                <g key={cp.iso + cp.name}>
                   <path
                     d={cp.path}
-                    fill="url(#outage-hatch)"
-                    stroke="none"
-                    style={{ pointerEvents: 'none' }}
-                  />
-                )}
-              </g>
-            ))}
-
-            {/* ── SAT BANDS ── */}
-            {showSat && SAT_CONSTELLATIONS.map(sat => {
-              const [, yTop]    = m(0,  sat.latBand);
-              const [, yBottom] = m(0, -sat.latBand);
-              const [xRight]    = m(180, 0);
-              return (
-                <g key={sat.name}>
-                  <rect x={0} y={yTop} width={SVG_W} height={yBottom - yTop}
-                    fill={sat.color} stroke="none" />
-                  <line x1={0} y1={yTop} x2={SVG_W} y2={yTop}
-                    stroke={sat.borderColor} strokeWidth={0.6} strokeDasharray="4 3" />
-                  <line x1={0} y1={yBottom} x2={SVG_W} y2={yBottom}
-                    stroke={sat.borderColor} strokeWidth={0.6} strokeDasharray="4 3" />
-                  <text x={xRight - 4} y={yTop + 10} textAnchor="end" fontSize={7}
-                    fill={sat.borderColor} fontFamily={C.mono}>
-                    {sat.name} · {sat.sats.toLocaleString()} sats
-                  </text>
-                </g>
-              );
-            })}
-
-            {/* ── LIVE CABLES from TeleGeography ── */}
-            {showCables && shouldUseLive && liveCables.map((cable, ci) => {
-              const isHovered = hoveredCable === cable.name;
-              return (
-                <g key={`live-${cable.id || ci}`}>
-                  {cable.coordinates.map((lineString, lsi) => {
-                    if (lineString.length < 2) return null;
-                    // Sample every Nth point for performance
-                    const step = Math.max(1, Math.floor(lineString.length / 80));
-                    const sampled = lineString.filter((_, idx) => idx % step === 0 || idx === lineString.length - 1);
-                    const pts = sampled.map(coord => {
-                      const clampedLat = Math.max(-82, Math.min(82, coord[1]));
-                      const [px, py] = m(coord[0], clampedLat);
-                      return `${px.toFixed(1)},${py.toFixed(1)}`;
-                    }).join(' ');
-                    return (
-                      <polyline
-                        key={`ls-${lsi}`}
-                        points={pts}
-                        stroke={cable.color || '#00ccff'}
-                        strokeWidth={isHovered ? 2 : 0.8}
-                        opacity={isHovered ? 0.9 : 0.35}
-                        fill="none"
-                        style={isHovered
-                          ? { filter: `drop-shadow(0 0 3px ${cable.color || '#00ccff'})`, cursor: 'pointer' }
-                          : { cursor: 'pointer' }}
-                        onMouseEnter={e => {
-                          setHoveredCable(cable.name);
-                          const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
-                          setTooltip({
-                            x: e.clientX - (rect?.left ?? 0),
-                            y: e.clientY - (rect?.top ?? 0),
-                            text: `${cable.name} (TeleGeography live data)`,
-                          });
-                        }}
-                        onMouseLeave={() => { setHoveredCable(null); setTooltip(null); }}
-                        onClick={() => setSelectedItem({
-                          type: 'cable', name: cable.name,
-                          detail: `Live submarine cable data from TeleGeography · ${cable.segmentCount} coordinate segments`,
-                          extra: 'Source: submarinecablemap.com — real-time infrastructure mapping',
-                        })}
-                      />
-                    );
-                  })}
-                </g>
-              );
-            })}
-
-            {/* ── SEED CABLES (fallback) ── */}
-            {showCables && !shouldUseLive && activeSeedCables.map(cable => {
-              const isHovered = hoveredCable === cable.name;
-              const pts = cablePoints(cable.coords);
-              const [startLon, startLat] = cable.coords[0];
-              const [endLon,   endLat]   = cable.coords[cable.coords.length - 1];
-              const [sx, sy] = m(startLon, startLat);
-              const [ex, ey] = m(endLon,   endLat);
-              return (
-                <g key={cable.name}>
-                  <polyline
-                    points={pts}
-                    stroke={cable.color}
-                    strokeWidth={isHovered ? 2.5 : 1.5}
-                    opacity={isHovered ? 1 : 0.6}
-                    fill="none"
-                    style={isHovered
-                      ? { filter: `drop-shadow(0 0 4px ${cable.color})`, cursor: 'pointer' }
-                      : { cursor: 'pointer' }}
-                    onMouseEnter={e => {
-                      setHoveredCable(cable.name);
-                      const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
-                      setTooltip({
-                        x: e.clientX - (rect?.left ?? 0),
-                        y: e.clientY - (rect?.top  ?? 0),
-                        text: `${cable.name} · ${cable.capacity} · ${cable.owners}`,
-                      });
+                    fill={getCountryFill(cp.iso)}
+                    stroke={getCountryStroke(cp.iso)}
+                    strokeWidth={getCountryStrokeWidth(cp.iso)}
+                    onMouseEnter={(e) => {
+                      const ct = countryThreats.find(c => c.code === cp.iso);
+                      const outage = iodaOutages.find(o => o.countryCode === cp.iso);
+                      if (ct || cp.name || outage) {
+                        const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
+                        let text = '';
+                        if (ct) {
+                          text = `${cp.name} (${cp.iso}) · ${ct.total.toLocaleString()} events · Top: ${Object.entries(ct.vectors).sort((a,b) => b[1]-a[1]).slice(0,2).map(([v,c]) => `${v} ${c.toLocaleString()}`).join(', ')}`;
+                        } else {
+                          text = `${cp.name} (${cp.iso})`;
+                        }
+                        if (outage) {
+                          text += ` | OUTAGE: ${outage.datasource} ${outage.signalDrop}% drop`;
+                        }
+                        setTooltip({
+                          x: e.clientX - (rect?.left ?? 0),
+                          y: e.clientY - (rect?.top ?? 0),
+                          text,
+                        });
+                      }
                     }}
-                    onMouseLeave={() => { setHoveredCable(null); setTooltip(null); }}
-                    onClick={() => selectCable(cable)}
+                    onMouseLeave={() => setTooltip(null)}
+                    style={{ cursor: 'pointer' }}
                   />
-                  <circle cx={sx} cy={sy} r={2.5} fill={cable.color} style={{ pointerEvents: 'none' }} />
-                  <circle cx={ex} cy={ey} r={2.5} fill={cable.color} style={{ pointerEvents: 'none' }} />
+                  {/* Outage hatch overlay */}
+                  {showOutages && outageCountryCodes.has(cp.iso) && (
+                    <path
+                      d={cp.path}
+                      fill="url(#outage-hatch)"
+                      stroke="none"
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  )}
                 </g>
-              );
-            })}
+              ))}
 
-            {/* ── ATTACK FLOW ARROWS ── */}
-            {showFlows && flows.slice(0, 20).map((flow, i) => {
-              const srcCoords = COUNTRY_COORDS[flow.source_country];
-              if (!srcCoords) return null;
-              const [srcLat, srcLon] = srcCoords;
-              const tgt = getFlowTarget(flow);
-              const [sx, sy] = m(srcLon, srcLat);
-              const [ex, ey] = m(tgt[0], tgt[1]);
-              const mx = (sx + ex) / 2;
-              const my = Math.min(sy, ey) - Math.abs(ex - sx) * 0.15 - 15;
-              const color = VECTOR_COLORS[flow.vector] || '#6b7280';
-              const thickness = Math.max(0.8, Math.min(3, Math.log10(flow.event_count + 1) * 0.6));
-              return (
-                <g key={`flow-${i}`}>
-                  <path
-                    d={`M${sx},${sy} Q${mx},${my} ${ex},${ey}`}
-                    fill="none"
-                    stroke={color}
-                    strokeWidth={thickness}
-                    opacity={0.5}
-                    strokeDasharray="4 2"
+              {/* ── SAT BANDS ── */}
+              {showSat && SAT_CONSTELLATIONS.map(sat => {
+                const [, yTop]    = m(0,  sat.latBand);
+                const [, yBottom] = m(0, -sat.latBand);
+                const [xRight]    = m(180, 0);
+                return (
+                  <g key={sat.name}>
+                    <rect x={0} y={yTop} width={SVG_W} height={yBottom - yTop}
+                      fill={sat.color} stroke="none" />
+                    <line x1={0} y1={yTop} x2={SVG_W} y2={yTop}
+                      stroke={sat.borderColor} strokeWidth={0.6} strokeDasharray="4 3" />
+                    <line x1={0} y1={yBottom} x2={SVG_W} y2={yBottom}
+                      stroke={sat.borderColor} strokeWidth={0.6} strokeDasharray="4 3" />
+                    <text x={xRight - 4} y={yTop + 10} textAnchor="end" fontSize={7}
+                      fill={sat.borderColor} fontFamily={C.mono}>
+                      {sat.name} · {sat.sats.toLocaleString()} sats
+                    </text>
+                  </g>
+                );
+              })}
+
+              {/* ── LIVE CABLES from TeleGeography ── */}
+              {showCables && shouldUseLive && liveCables.map((cable, ci) => {
+                const isHovered = hoveredCable === cable.name;
+                return (
+                  <g key={`live-${cable.id || ci}`}>
+                    {cable.coordinates.map((lineString, lsi) => {
+                      if (lineString.length < 2) return null;
+                      const step = Math.max(1, Math.floor(lineString.length / 80));
+                      const sampled = lineString.filter((_: any, idx: number) => idx % step === 0 || idx === lineString.length - 1);
+                      const pts = sampled.map((coord: number[]) => {
+                        const clampedLat = Math.max(-82, Math.min(82, coord[1]));
+                        const [px, py] = m(coord[0], clampedLat);
+                        return `${px.toFixed(1)},${py.toFixed(1)}`;
+                      }).join(' ');
+                      return (
+                        <polyline
+                          key={`ls-${lsi}`}
+                          points={pts}
+                          stroke={cable.color || '#00ccff'}
+                          strokeWidth={isHovered ? 2 : 0.8}
+                          opacity={isHovered ? 0.9 : 0.35}
+                          fill="none"
+                          style={isHovered
+                            ? { filter: `drop-shadow(0 0 3px ${cable.color || '#00ccff'})`, cursor: 'pointer' }
+                            : { cursor: 'pointer' }}
+                          onMouseEnter={e => {
+                            setHoveredCable(cable.name);
+                            const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
+                            setTooltip({
+                              x: e.clientX - (rect?.left ?? 0),
+                              y: e.clientY - (rect?.top ?? 0),
+                              text: `${cable.name} (TeleGeography live data)`,
+                            });
+                          }}
+                          onMouseLeave={() => { setHoveredCable(null); setTooltip(null); }}
+                          onClick={() => setSelectedItem({
+                            type: 'cable', name: cable.name,
+                            detail: `Live submarine cable data from TeleGeography · ${cable.segmentCount} coordinate segments`,
+                            extra: 'Source: submarinecablemap.com — real-time infrastructure mapping',
+                          })}
+                        />
+                      );
+                    })}
+                  </g>
+                );
+              })}
+
+              {/* ── SEED CABLES (fallback) ── */}
+              {showCables && !shouldUseLive && activeSeedCables.map(cable => {
+                const isHovered = hoveredCable === cable.name;
+                const pts = cablePoints(cable.coords);
+                const [startLon, startLat] = cable.coords[0];
+                const [endLon,   endLat]   = cable.coords[cable.coords.length - 1];
+                const [sx, sy] = m(startLon, startLat);
+                const [ex, ey] = m(endLon,   endLat);
+                return (
+                  <g key={cable.name}>
+                    <polyline
+                      points={pts}
+                      stroke={cable.color}
+                      strokeWidth={isHovered ? 2.5 : 1.5}
+                      opacity={isHovered ? 1 : 0.6}
+                      fill="none"
+                      style={isHovered
+                        ? { filter: `drop-shadow(0 0 4px ${cable.color})`, cursor: 'pointer' }
+                        : { cursor: 'pointer' }}
+                      onMouseEnter={e => {
+                        setHoveredCable(cable.name);
+                        const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
+                        setTooltip({
+                          x: e.clientX - (rect?.left ?? 0),
+                          y: e.clientY - (rect?.top  ?? 0),
+                          text: `${cable.name} · ${cable.capacity} · ${cable.owners}`,
+                        });
+                      }}
+                      onMouseLeave={() => { setHoveredCable(null); setTooltip(null); }}
+                      onClick={() => selectCable(cable)}
+                    />
+                    <circle cx={sx} cy={sy} r={2.5} fill={cable.color} style={{ pointerEvents: 'none' }} />
+                    <circle cx={ex} cy={ey} r={2.5} fill={cable.color} style={{ pointerEvents: 'none' }} />
+                  </g>
+                );
+              })}
+
+              {/* ── ATTACK FLOW ARROWS ── */}
+              {showFlows && flows.slice(0, 20).map((flow, i) => {
+                const srcCoords = COUNTRY_COORDS[flow.source_country];
+                if (!srcCoords) return null;
+                const [srcLat, srcLon] = srcCoords;
+                const tgt = getFlowTarget(flow);
+                const [sx, sy] = m(srcLon, srcLat);
+                const [ex, ey] = m(tgt[0], tgt[1]);
+                const mx = (sx + ex) / 2;
+                const my = Math.min(sy, ey) - Math.abs(ex - sx) * 0.15 - 15;
+                const color = VECTOR_COLORS[flow.vector] || '#6b7280';
+                const thickness = Math.max(0.8, Math.min(3, Math.log10(flow.event_count + 1) * 0.6));
+                return (
+                  <g key={`flow-${i}`}>
+                    <path
+                      d={`M${sx},${sy} Q${mx},${my} ${ex},${ey}`}
+                      fill="none"
+                      stroke={color}
+                      strokeWidth={thickness}
+                      opacity={0.5}
+                      strokeDasharray="4 2"
+                      style={{ cursor: 'pointer' }}
+                      onMouseEnter={e => {
+                        const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
+                        setTooltip({
+                          x: e.clientX - (rect?.left ?? 0),
+                          y: e.clientY - (rect?.top ?? 0),
+                          text: `${flow.source_country} > ${flow.vector} · ${flow.event_count.toLocaleString()} events · ${flow.unique_ips} IPs${flow.top_port ? ` · port ${flow.top_port}` : ''}`,
+                        });
+                      }}
+                      onMouseLeave={() => setTooltip(null)}
+                      onClick={() => setSelectedItem({
+                        type: 'flow', name: `${flow.source_country} > ${flow.vector}`,
+                        detail: `${flow.event_count.toLocaleString()} events · ${flow.unique_ips} unique IPs${flow.top_port ? ` · port ${flow.top_port}` : ''}`,
+                        extra: `Source coordinates: ${flow.avg_lat.toFixed(2)}, ${flow.avg_lon.toFixed(2)}`,
+                      })}
+                    />
+                    <circle cx={ex} cy={ey} r={2} fill={color} opacity={0.7} style={{ pointerEvents: 'none' }} />
+                    <circle cx={sx} cy={sy} r={1.5} fill={color} opacity={0.5} style={{ pointerEvents: 'none' }} />
+                  </g>
+                );
+              })}
+
+              {/* ── EXPOSURE POINTS ── */}
+              {showExposure && exposurePoints.map((ep, i) => {
+                const [px, py] = m(ep.lon, ep.lat);
+                const color = QUERY_COLORS[ep.query] || QUERY_COLORS.default;
+                const r = ep.vuln_count > 0 ? 3.5 : 2;
+                return (
+                  <circle
+                    key={`exp-${i}`}
+                    cx={px} cy={py} r={r}
+                    fill={color}
+                    opacity={0.6}
+                    stroke={ep.vuln_count > 0 ? '#ffffff' : 'none'}
+                    strokeWidth={ep.vuln_count > 0 ? 0.5 : 0}
                     style={{ cursor: 'pointer' }}
                     onMouseEnter={e => {
                       const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
                       setTooltip({
                         x: e.clientX - (rect?.left ?? 0),
                         y: e.clientY - (rect?.top ?? 0),
-                        text: `${flow.source_country} > ${flow.vector} · ${flow.event_count.toLocaleString()} events · ${flow.unique_ips} IPs${flow.top_port ? ` · port ${flow.top_port}` : ''}`,
+                        text: `${ep.ip}:${ep.port} · ${ep.product || 'unknown'} · ${ep.org || ''} · ${ep.country}${ep.vuln_count > 0 ? ` · ${ep.vuln_count} CVEs` : ''}`,
                       });
                     }}
                     onMouseLeave={() => setTooltip(null)}
                     onClick={() => setSelectedItem({
-                      type: 'flow', name: `${flow.source_country} > ${flow.vector}`,
-                      detail: `${flow.event_count.toLocaleString()} events · ${flow.unique_ips} unique IPs${flow.top_port ? ` · port ${flow.top_port}` : ''}`,
-                      extra: `Source coordinates: ${flow.avg_lat.toFixed(2)}, ${flow.avg_lon.toFixed(2)}`,
+                      type: 'exposure', name: `${ep.ip}:${ep.port}`,
+                      detail: `${ep.query.replace(/_/g, ' ')} · ${ep.product || 'unknown service'} · ${ep.org || 'unknown org'} · ${ep.country}`,
+                      extra: ep.vuln_count > 0 ? `${ep.vuln_count} known vulnerabilities` : undefined,
                     })}
                   />
-                  <circle cx={ex} cy={ey} r={2} fill={color} opacity={0.7} style={{ pointerEvents: 'none' }} />
-                  <circle cx={sx} cy={sy} r={1.5} fill={color} opacity={0.5} style={{ pointerEvents: 'none' }} />
-                </g>
-              );
-            })}
+                );
+              })}
 
-            {/* ── EXPOSURE POINTS ── */}
-            {showExposure && exposurePoints.map((ep, i) => {
-              const [px, py] = m(ep.lon, ep.lat);
-              const color = QUERY_COLORS[ep.query] || QUERY_COLORS.default;
-              const r = ep.vuln_count > 0 ? 3.5 : 2;
-              return (
-                <circle
-                  key={`exp-${i}`}
-                  cx={px} cy={py} r={r}
-                  fill={color}
-                  opacity={0.6}
-                  stroke={ep.vuln_count > 0 ? '#ffffff' : 'none'}
-                  strokeWidth={ep.vuln_count > 0 ? 0.5 : 0}
-                  style={{ cursor: 'pointer' }}
-                  onMouseEnter={e => {
-                    const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
-                    setTooltip({
-                      x: e.clientX - (rect?.left ?? 0),
-                      y: e.clientY - (rect?.top ?? 0),
-                      text: `${ep.ip}:${ep.port} · ${ep.product || 'unknown'} · ${ep.org || ''} · ${ep.country}${ep.vuln_count > 0 ? ` · ${ep.vuln_count} CVEs` : ''}`,
-                    });
-                  }}
-                  onMouseLeave={() => setTooltip(null)}
-                  onClick={() => setSelectedItem({
-                    type: 'exposure', name: `${ep.ip}:${ep.port}`,
-                    detail: `${ep.query.replace(/_/g, ' ')} · ${ep.product || 'unknown service'} · ${ep.org || 'unknown org'} · ${ep.country}`,
-                    extra: ep.vuln_count > 0 ? `${ep.vuln_count} known vulnerabilities` : undefined,
-                  })}
-                />
-              );
-            })}
+              {/* ── OUTAGE MARKERS on map ── */}
+              {showOutages && iodaOutages.map((outage, i) => {
+                const coords = COUNTRY_COORDS[outage.countryCode];
+                if (!coords) return null;
+                const [px, py] = m(coords[1], coords[0]);
+                const color = severityColor(outage.severity);
+                return (
+                  <g key={`outage-marker-${i}`}>
+                    <circle cx={px} cy={py} r={8} fill="none" stroke={color} strokeWidth={1.5} opacity={0.6}>
+                      <animate attributeName="r" values="8;14;8" dur="2s" repeatCount="indefinite" />
+                      <animate attributeName="opacity" values="0.6;0;0.6" dur="2s" repeatCount="indefinite" />
+                    </circle>
+                    <circle cx={px} cy={py} r={4} fill={color} opacity={0.8} />
+                    <text x={px} y={py - 10} textAnchor="middle" fontSize={7} fill={color} fontFamily={C.mono} fontWeight={700}>
+                      {outage.countryCode}
+                    </text>
+                  </g>
+                );
+              })}
 
-            {/* ── OUTAGE MARKERS on map ── */}
-            {showOutages && iodaOutages.map((outage, i) => {
-              const coords = COUNTRY_COORDS[outage.countryCode];
-              if (!coords) return null;
-              const [px, py] = m(coords[1], coords[0]);
-              const color = severityColor(outage.severity);
-              return (
-                <g key={`outage-marker-${i}`}>
-                  <circle cx={px} cy={py} r={8} fill="none" stroke={color} strokeWidth={1.5} opacity={0.6}>
-                    <animate attributeName="r" values="8;14;8" dur="2s" repeatCount="indefinite" />
-                    <animate attributeName="opacity" values="0.6;0;0.6" dur="2s" repeatCount="indefinite" />
-                  </circle>
-                  <circle cx={px} cy={py} r={4} fill={color} opacity={0.8} />
-                  <text x={px} y={py - 10} textAnchor="middle" fontSize={7} fill={color} fontFamily={C.mono} fontWeight={700}>
-                    {outage.countryCode}
-                  </text>
-                </g>
-              );
-            })}
+              {/* ── IXPs ── */}
+              {showIXPs && IXPS.map(ixp => {
+                const [px, py] = m(ixp.lon, ixp.lat);
+                const innerR   = ixp.tier === 1 ? 5 : 3.5;
+                const outerR   = ixp.tier === 1 ? 14 : 10;
+                const animMax  = ixp.tier === 1 ? 20 : 16;
+                const abbreviated = ixp.name.split(' ').slice(0, 2).join(' ');
+                return (
+                  <g
+                    key={ixp.name}
+                    style={{ cursor: 'pointer' }}
+                    onMouseEnter={e => {
+                      setHoveredIXP(ixp.name);
+                      const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
+                      setTooltip({
+                        x: e.clientX - (rect?.left ?? 0),
+                        y: e.clientY - (rect?.top  ?? 0),
+                        text: `${ixp.name} · ${ixp.throughput} · ${ixp.members} members`,
+                      });
+                    }}
+                    onMouseLeave={() => { setHoveredIXP(null); setTooltip(null); }}
+                    onClick={() => selectIXP(ixp)}
+                  >
+                    <circle cx={px} cy={py} r={outerR}
+                      fill="none" stroke="rgba(0,204,255,0.3)" strokeWidth={1}>
+                      <animate attributeName="r" values={`${outerR};${animMax};${outerR}`} dur="3s" repeatCount="indefinite" />
+                      <animate attributeName="opacity" values="0.6;0;0.6" dur="3s" repeatCount="indefinite" />
+                    </circle>
+                    <circle cx={px} cy={py} r={innerR}
+                      fill="rgba(0,204,255,0.8)" stroke="#00ccff" strokeWidth={1}
+                      opacity={hoveredIXP === ixp.name ? 1 : 0.85} />
+                    <text x={px} y={py + innerR + 8} textAnchor="middle" fontSize={6.5}
+                      fill={C.muted} fontFamily={C.mono}>
+                      {abbreviated}
+                    </text>
+                  </g>
+                );
+              })}
 
-            {/* ── IXPs ── */}
-            {showIXPs && IXPS.map(ixp => {
-              const [px, py] = m(ixp.lon, ixp.lat);
-              const innerR   = ixp.tier === 1 ? 5 : 3.5;
-              const outerR   = ixp.tier === 1 ? 14 : 10;
-              const animMax  = ixp.tier === 1 ? 20 : 16;
-              const abbreviated = ixp.name.split(' ').slice(0, 2).join(' ');
-              return (
-                <g
-                  key={ixp.name}
-                  style={{ cursor: 'pointer' }}
-                  onMouseEnter={e => {
-                    setHoveredIXP(ixp.name);
-                    const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
-                    setTooltip({
-                      x: e.clientX - (rect?.left ?? 0),
-                      y: e.clientY - (rect?.top  ?? 0),
-                      text: `${ixp.name} · ${ixp.throughput} · ${ixp.members} members`,
-                    });
-                  }}
-                  onMouseLeave={() => { setHoveredIXP(null); setTooltip(null); }}
-                  onClick={() => selectIXP(ixp)}
-                >
-                  <circle cx={px} cy={py} r={outerR}
-                    fill="none" stroke="rgba(0,204,255,0.3)" strokeWidth={1}>
-                    <animate attributeName="r" values={`${outerR};${animMax};${outerR}`} dur="3s" repeatCount="indefinite" />
-                    <animate attributeName="opacity" values="0.6;0;0.6" dur="3s" repeatCount="indefinite" />
-                  </circle>
-                  <circle cx={px} cy={py} r={innerR}
-                    fill="rgba(0,204,255,0.8)" stroke="#00ccff" strokeWidth={1}
-                    opacity={hoveredIXP === ixp.name ? 1 : 0.85} />
-                  <text x={px} y={py + innerR + 8} textAnchor="middle" fontSize={6.5}
-                    fill={C.muted} fontFamily={C.mono}>
-                    {abbreviated}
-                  </text>
-                </g>
-              );
-            })}
-
-            {/* ── CLOUD REGIONS ── */}
-            {showCloud && CLOUD_REGIONS.map(r => {
-              const [px, py] = m(r.lon, r.lat);
-              const color    = PROVIDER_COLORS[r.provider];
-              const key      = `${r.provider}-${r.region}`;
-              const isHov    = hoveredCloud === key;
-              const sz       = 7;
-              const healthBorder = getCloudRegionHealthBorder(r);
-              return (
-                <g
-                  key={key}
-                  style={{ cursor: 'pointer' }}
-                  onMouseEnter={e => {
-                    setHoveredCloud(key);
-                    const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
-                    setTooltip({
-                      x: e.clientX - (rect?.left ?? 0),
-                      y: e.clientY - (rect?.top  ?? 0),
-                      text: `${r.provider} · ${r.region} · ${r.name} · ${r.az} AZs`,
-                    });
-                  }}
-                  onMouseLeave={() => { setHoveredCloud(null); setTooltip(null); }}
-                  onClick={() => selectCloud(r)}
-                >
-                  <rect
-                    x={px - sz / 2} y={py - sz / 2} width={sz} height={sz}
-                    rx={2}
-                    fill={`${color}22`}
-                    stroke={healthBorder}
-                    strokeWidth={isHov ? 1.8 : 1}
-                    opacity={isHov ? 1 : 0.8}
-                    style={isHov ? { filter: `drop-shadow(0 0 3px ${color})` } : undefined}
-                  />
-                  {/* Health indicator dot */}
-                  {cloudHealth.loaded && (
-                    <circle
-                      cx={px + sz / 2 + 2} cy={py - sz / 2 - 2} r={2}
-                      fill={healthBorder}
-                      opacity={0.9}
-                      style={{ pointerEvents: 'none' }}
+              {/* ── CLOUD REGIONS ── */}
+              {showCloud && CLOUD_REGIONS.map(r => {
+                const [px, py] = m(r.lon, r.lat);
+                const color    = PROVIDER_COLORS[r.provider];
+                const key      = `${r.provider}-${r.region}`;
+                const isHov    = hoveredCloud === key;
+                const sz       = 7;
+                const healthBorder = getCloudRegionHealthBorder(r);
+                return (
+                  <g
+                    key={key}
+                    style={{ cursor: 'pointer' }}
+                    onMouseEnter={e => {
+                      setHoveredCloud(key);
+                      const rect = (e.currentTarget.closest('div') as HTMLDivElement | null)?.getBoundingClientRect();
+                      setTooltip({
+                        x: e.clientX - (rect?.left ?? 0),
+                        y: e.clientY - (rect?.top  ?? 0),
+                        text: `${r.provider} · ${r.region} · ${r.name} · ${r.az} AZs`,
+                      });
+                    }}
+                    onMouseLeave={() => { setHoveredCloud(null); setTooltip(null); }}
+                    onClick={() => selectCloud(r)}
+                  >
+                    <rect
+                      x={px - sz / 2} y={py - sz / 2} width={sz} height={sz}
+                      rx={2}
+                      fill={`${color}22`}
+                      stroke={healthBorder}
+                      strokeWidth={isHov ? 1.8 : 1}
+                      opacity={isHov ? 1 : 0.8}
+                      style={isHov ? { filter: `drop-shadow(0 0 3px ${color})` } : undefined}
                     />
-                  )}
-                </g>
-              );
-            })}
-          </svg>
+                    {/* Health indicator dot */}
+                    {cloudHealth.loaded && (
+                      <circle
+                        cx={px + sz / 2 + 2} cy={py - sz / 2 - 2} r={2}
+                        fill={healthBorder}
+                        opacity={0.9}
+                        style={{ pointerEvents: 'none' }}
+                      />
+                    )}
+                  </g>
+                );
+              })}
+            </svg>
 
-          {/* Floating tooltip */}
-          {tooltip && <Tooltip text={tooltip.text} x={tooltip.x} y={tooltip.y} />}
-        </div>
+            {/* Floating tooltip */}
+            {tooltip && <Tooltip text={tooltip.text} x={tooltip.x} y={tooltip.y} />}
+          </div>
+        ) : (
+          /* ─────────── 3D GLOBE MODE ─────────── */
+          <div style={{ position: 'relative', borderRadius: '6px', overflow: 'hidden' }}>
+            <InfraGlobe
+              showCables={showCables}
+              showIXPs={showIXPs}
+              showCloud={showCloud}
+              showSat={showSat}
+              showExposure={showExposure}
+              showFlows={showFlows}
+              showOutages={showOutages}
+              showSatellites={showSatellites}
+              liveCables={liveCables}
+              useLiveCables={useLiveCables}
+              exposurePoints={exposurePoints}
+              flows={flows}
+              iodaOutages={iodaOutages}
+              anomalies={anomalies}
+              satRecords={satRecords}
+              satCounts={satCounts}
+              onSelectItem={setSelectedItem}
+            />
+            {/* Satellite info overlay (globe mode only) */}
+            {showSatellites && satRecords.length > 0 && (
+              <div style={{
+                position: 'absolute', top: '8px', right: '8px',
+                background: 'rgba(8,15,28,0.9)', border: '1px solid rgba(0,180,255,0.2)',
+                borderRadius: '6px', padding: '8px 12px', fontSize: '9px', fontFamily: C.mono,
+              }}>
+                <div style={{ fontSize: '8px', color: C.accent, fontWeight: 700, letterSpacing: '0.08em', marginBottom: '4px' }}>
+                  SATELLITES ({satRecords.length})
+                </div>
+                {satCounts.starlink > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#00e5ff' }} />
+                    <span style={{ color: C.text }}>Starlink</span>
+                    <span style={{ color: C.muted }}>{satCounts.starlink}</span>
+                  </div>
+                )}
+                {satCounts.oneweb > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#6366f1' }} />
+                    <span style={{ color: C.text }}>OneWeb</span>
+                    <span style={{ color: C.muted }}>{satCounts.oneweb}</span>
+                  </div>
+                )}
+                {satCounts.geo > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#eab308' }} />
+                    <span style={{ color: C.text }}>GEO</span>
+                    <span style={{ color: C.muted }}>{satCounts.geo}</span>
+                  </div>
+                )}
+                {satCounts.iridium > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#22c55e' }} />
+                    <span style={{ color: C.text }}>Iridium</span>
+                    <span style={{ color: C.muted }}>{satCounts.iridium}</span>
+                  </div>
+                )}
+                <div style={{ fontSize: '7px', color: C.muted, marginTop: '4px', fontStyle: 'italic' }}>
+                  {satStatus === 'live' ? 'CelesTrak TLE · SGP4' : 'Fallback dataset'}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ── SELECTED ITEM DETAIL ── */}
         {selectedItem && (
@@ -1772,6 +2582,7 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
                   {selectedItem.type === 'cloud'  && '[CLOUD]'}
                   {selectedItem.type === 'flow'   && '[FLOW]'}
                   {selectedItem.type === 'exposure' && '[EXPOSURE]'}
+                  {selectedItem.type === 'outage' && '[OUTAGE]'}
                   {' '}{selectedItem.name}
                 </div>
                 <div style={{ fontSize: '11px', color: C.text, marginBottom: '4px' }}>
@@ -2245,6 +3056,44 @@ export default function InfrastructurePanel({ onClose }: InfrastructurePanelProp
                     <span style={{ fontSize: '8px', color: C.text }}>{s.name} ({s.sats.toLocaleString()})</span>
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Satellite tracking legend */}
+          {showSatellites && satRecords.length > 0 && (
+            <div>
+              <div style={{ fontSize: '8px', color: C.muted, marginBottom: '4px', letterSpacing: '0.08em' }}>
+                TRACKED SATELLITES ({satRecords.length})
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                {satCounts.starlink > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#00e5ff' }} />
+                    <span style={{ fontSize: '8px', color: C.text }}>Starlink ({satCounts.starlink})</span>
+                  </div>
+                )}
+                {satCounts.oneweb > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#6366f1' }} />
+                    <span style={{ fontSize: '8px', color: C.text }}>OneWeb ({satCounts.oneweb})</span>
+                  </div>
+                )}
+                {satCounts.geo > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#eab308' }} />
+                    <span style={{ fontSize: '8px', color: C.text }}>GEO ({satCounts.geo})</span>
+                  </div>
+                )}
+                {satCounts.iridium > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#22c55e' }} />
+                    <span style={{ fontSize: '8px', color: C.text }}>Iridium ({satCounts.iridium})</span>
+                  </div>
+                )}
+                <div style={{ fontSize: '7px', color: C.muted, marginTop: '2px' }}>
+                  SGP4 propagation via satellite.js · TLE from CelesTrak
+                </div>
               </div>
             </div>
           )}
